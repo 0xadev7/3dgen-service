@@ -2,11 +2,12 @@ fastapi==0.115.5
 uvicorn[standard]==0.30.6
 
 # Hugging Face ecosystem
-diffusers==0.30.3
+diffusers==0.31.0
 transformers==4.44.2
 accelerate==0.34.2
 safetensors==0.4.5
 huggingface-hub==0.24.6
+protobuf<5
 
 # Geometry & 3D
 trimesh==4.4.9

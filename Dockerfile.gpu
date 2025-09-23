@@ -11,16 +11,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
     ninja-build cmake python3-dev ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# --- Your deps (don’t overwrite base Torch) ---
+# --- Your deps ---
 COPY requirements.txt ./requirements.txt
 RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt \
- && pip install --upgrade pip setuptools wheel \
- && pip install -r requirements.txt \
- && python -m pip cache purge || true
+    && python -m pip install --upgrade pip setuptools wheel \
+    && pip uninstall -y diffusers transformers huggingface-hub accelerate safetensors || true \
+    && pip install --no-cache-dir -r requirements.txt \
+    && python - <<'PY'
+import diffusers, huggingface_hub
+print("diffusers:", diffusers.__version__)
+print("huggingface_hub:", huggingface_hub.__version__)
+PY
 
 # --- Get TripoSR code ---
 ARG TRIPOSR_REF=main
@@ -28,14 +33,14 @@ RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Resea
 
 # --- TripoSR deps (skip torchmcubes in file; compile ourselves) ---
 RUN sed -i '/torchmcubes/d' ${TRIPOSR_DIR}/requirements.txt \
- && pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
+    && pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
 
 # Build torchmcubes from source with valid arches
 # A100: 8.0 | RTX 30xx: 8.6 | Ada/L40/RTX 6000 Ada: 8.9 | (add ;9.0 for H100)
 ARG CUDA_ARCHES="8.0;8.6;8.9"
 RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES}" MAX_JOBS=4 \
     pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git \
- && python - <<'PY'
+    && python - <<'PY'
 import torch, torchmcubes
 print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
 print("torchmcubes:", getattr(torchmcubes, "__version__", "git"))
