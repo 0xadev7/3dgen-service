@@ -19,8 +19,7 @@ numpy==1.26.4
 Pillow==10.4.0
 opencv-python==4.10.0.84
 
-# TripoSR + configs
-tripoSR==1.1.1
+# TripoSR configs
 omegaconf==2.3.0
 pyyaml==6.0.2
 
