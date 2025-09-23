@@ -5,7 +5,6 @@ diffusers==0.30.3
 transformers==4.44.2
 accelerate==0.34.2
 trimesh==4.4.9
-pyrender==0.1.47
 numpy==1.26.4
 Pillow==10.4.0
 runpod==1.6.2
