@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -17,7 +17,7 @@ COPY requirements.txt ./requirements.txt
 RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt && \
     pip install -r requirements.txt
 
-RUN pip install "git+https://github.com/Stability-AI/TripoSR@main#egg=tripoSR"
+RUN pip install --no-cache-dir "git+https://github.com/VAST-AI-Research/TripoSR@main#egg=tripoSR"
 
 # (Optional) pre-download TripoSR model weights into the cache during build
 #   pass a token only if required by your HF account for the repo
