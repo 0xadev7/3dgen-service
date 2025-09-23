@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TRIPOSR_DIR=/opt/TripoSR \
     CUDA_HOME=/usr/local/cuda
 
-# libs for imaging; + toolchain for CUDA extensions (new: ninja, cmake, python3-dev)
+# Imaging libs + toolchain for CUDA extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
     ninja-build cmake python3-dev \
@@ -15,46 +15,46 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# ---- Your project deps (do not overwrite Torch from base) ----
+# Your app deps (keep Torch from base)
 COPY requirements.txt ./requirements.txt
-RUN sed -i '/^torch==/d;/^torchvision==/d;/^torch==/d' requirements.txt \
+RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt \
  && pip install --upgrade pip setuptools wheel \
  && pip install -r requirements.txt
 
-# ---- Get TripoSR code (not pip-installable) ----
+# Get TripoSR code
 ARG TRIPOSR_REF=main
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git ${TRIPOSR_DIR}
 
-# ---- Install TripoSR deps ----
-# First install what the repo wants…
-RUN pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
+# Install TripoSR deps, but skip torchmcubes here (we'll build it ourselves next)
+# (requirements.txt includes: omegaconf, Pillow, einops, transformers, trimesh, rembg,
+#  huggingface-hub, imageio[ffmpeg], gradio, xatlas, moderngl, and torchmcubes)
+RUN sed -i '/torchmcubes/d' ${TRIPOSR_DIR}/requirements.txt \
+ && pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
 
-# …then force a known-good torchmcubes build from source (common CUDA fix)
-# Adjust TORCH_CUDA_ARCH_LIST for your GPUs if you want faster builds.
-RUN pip uninstall -y torchmcubes || true \
- && TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" \
-    MAX_JOBS=4 \
+# Build torchmcubes from source with valid arch list (adjust for your GPUs)
+# - A100: 8.0  | RTX 30xx: 8.6 | Ada/L40/RTX 6000 Ada: 8.9 | H100: 9.0
+ARG CUDA_ARCHES="8.0;8.6;8.9"
+RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES}" MAX_JOBS=4 \
     pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
 
-# Quick smoke test so failures happen at build time, not runtime
+# Fast-fail smoke test
 RUN python - <<'PY'
 import torch, torchmcubes
 print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
 print("torchmcubes:", getattr(torchmcubes, "__version__", "git"))
 PY
 
-# ---- (Optional) Pre-download model weights into HF cache ----
+# (Optional) Warm HF cache
 ARG HF_TOKEN
 ENV HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
 RUN python - <<'PY'
 from huggingface_hub import snapshot_download
-repos = [
+for repo in [
     "stabilityai/TripoSR",
-    "openai/clip-vit-base-patch32",    # validation
-    "briaai/RMBG-1.4",                 # background removal
-    "black-forest-labs/FLUX.1-schnell" # t2i
-]
-for repo in repos:
+    "openai/clip-vit-base-patch32",
+    "briaai/RMBG-1.4",
+    "black-forest-labs/FLUX.1-schnell",
+]:
     try:
         snapshot_download(repo_id=repo, local_dir=None)
         print("Warmed:", repo)
@@ -62,7 +62,7 @@ for repo in repos:
         print("Warm fail:", repo, e)
 PY
 
-# ---- Your app ----
+# Your app
 COPY app ./app
 COPY scripts ./scripts
 
