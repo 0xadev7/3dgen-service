@@ -1,0 +1,35 @@
+device: "cuda"
+precision: "fp16"
+
+text2img:
+  backend: "flux"     # or "sdxl_turbo"
+  width: 768
+  height: 768
+  steps: 6            # keep low for speed
+  guidance: 1.0
+  seed: null
+
+bg:
+  backend: "bria_rmbg"
+  refine: true
+
+to3d:
+  backend: "triposr"
+  max_faces: 200_000   # clamp to save time/memory
+  simplify_to: 120_000
+
+gs:
+  points_per_m2: 2500  # sampling density
+  max_points: 1_200_000
+  cov_scale: 0.35
+
+validate:
+  clip_model: "ViT-H-14"
+  min_clip: 0.28
+  min_aesthetic: 5.4
+  nsfw_block: true
+  views: 4
+  max_attempts: 2
+
+io:
+  out_dir: "/tmp/3dgen"

@@ -1,0 +1,23 @@
+fastapi==0.114.2
+uvicorn[standard]==0.30.6
+omegaconf==2.3.0
+
+torch==2.3.1+cu121 ; sys_platform == 'linux' and platform_machine == 'x86_64'
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+transformers>=4.43.0
+diffusers>=0.30.0
+accelerate>=0.33.0
+safetensors>=0.4.3
+
+onnxruntime-gpu>=1.18.0
+open_clip_torch>=2.24.0
+huggingface_hub>=0.24.0
+
+numpy
+Pillow
+trimesh
+scipy
+pyyaml
+plyfile
+tripoSR>=0.1.0
