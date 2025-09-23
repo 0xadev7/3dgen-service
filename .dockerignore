@@ -1,0 +1,17 @@
+.git
+**/__pycache__/
+*.pyc
+*.pyo
+.vscode
+.venv
+env
+node_modules
+models
+datasets
+outputs
+cache
+*.pt
+*.bin
+*.safetensors
+huggingface
+hf_cache

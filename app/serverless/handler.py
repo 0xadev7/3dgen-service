@@ -1,6 +1,7 @@
 from __future__ import annotations
 import runpod
 import base64
+import os
 from ..config import get_config
 from ..models import load_models
 from ..pipeline import GaussianProcessor
@@ -8,6 +9,9 @@ from ..pipeline import GaussianProcessor
 # Preload
 CFG = get_config()
 MODELS = None if CFG.fast_debug else load_models(CFG)
+
+if os.path.isdir("/runpod-volume"):
+    os.environ["HF_HOME"] = "/runpod-volume/hf"
 
 # Input schema:
 # {

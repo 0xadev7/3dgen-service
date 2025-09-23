@@ -2,68 +2,52 @@ FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    HF_HOME=/models/hf \
     TORCH_HOME=/models/torch \
     TRIPOSR_DIR=/opt/TripoSR \
-    CUDA_HOME=/usr/local/cuda
+    CUDA_HOME=/usr/local/cuda \
+    PIP_NO_CACHE_DIR=1
 
 # Imaging libs + toolchain for CUDA extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
-    ninja-build cmake python3-dev \
+    ninja-build cmake python3-dev ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Your app deps (keep Torch from base)
+# --- Your deps (don’t overwrite base Torch) ---
 COPY requirements.txt ./requirements.txt
 RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt \
  && pip install --upgrade pip setuptools wheel \
- && pip install -r requirements.txt
+ && pip install -r requirements.txt \
+ && python -m pip cache purge || true
 
-# Get TripoSR code
+# --- Get TripoSR code ---
 ARG TRIPOSR_REF=main
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git ${TRIPOSR_DIR}
 
-# Install TripoSR deps, but skip torchmcubes here (we'll build it ourselves next)
-# (requirements.txt includes: omegaconf, Pillow, einops, transformers, trimesh, rembg,
-#  huggingface-hub, imageio[ffmpeg], gradio, xatlas, moderngl, and torchmcubes)
+# --- TripoSR deps (skip torchmcubes in file; compile ourselves) ---
 RUN sed -i '/torchmcubes/d' ${TRIPOSR_DIR}/requirements.txt \
  && pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
 
-# Build torchmcubes from source with valid arch list (adjust for your GPUs)
-# - A100: 8.0  | RTX 30xx: 8.6 | Ada/L40/RTX 6000 Ada: 8.9 | H100: 9.0
+# Build torchmcubes from source with valid arches
+# A100: 8.0 | RTX 30xx: 8.6 | Ada/L40/RTX 6000 Ada: 8.9 | (add ;9.0 for H100)
 ARG CUDA_ARCHES="8.0;8.6;8.9"
 RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES}" MAX_JOBS=4 \
-    pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
-
-# Fast-fail smoke test
-RUN python - <<'PY'
+    pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git \
+ && python - <<'PY'
 import torch, torchmcubes
 print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
 print("torchmcubes:", getattr(torchmcubes, "__version__", "git"))
 PY
 
-# (Optional) Warm HF cache
-ARG HF_TOKEN
-ENV HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
-RUN python - <<'PY'
-from huggingface_hub import snapshot_download
-for repo in [
-    "stabilityai/TripoSR",
-    "openai/clip-vit-base-patch32",
-    "briaai/RMBG-1.4",
-    "black-forest-labs/FLUX.1-schnell",
-]:
-    try:
-        snapshot_download(repo_id=repo, local_dir=None)
-        print("Warmed:", repo)
-    except Exception as e:
-        print("Warm fail:", repo, e)
-PY
+# --- DO NOT pre-warm HF in the image (saves GBs). Cache at runtime on a volume. ---
 
-# Your app
+# Your app (keep context small with .dockerignore)
 COPY app ./app
 COPY scripts ./scripts
+
+# Optional: set TRIPOSR_DIR for your app code
+ENV TRIPOSR_DIR=/opt/TripoSR
 
 CMD ["python", "-u", "-m", "app.serverless.handler"] 
