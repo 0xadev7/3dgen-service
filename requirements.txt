@@ -2,6 +2,7 @@
 fastapi==0.114.2
 uvicorn[standard]==0.30.6
 omegaconf==2.3.0
+python-multipart==0.0.20
 pyyaml==6.0.2
 
 # --- Core ML stacks (match Torch 2.3.x; avoid NumPy 2.x issues) ---
