@@ -9,4 +9,3 @@ numpy==1.26.4
 Pillow==10.4.0
 runpod==1.6.2
 python-dotenv==1.0.1
-tripoSR==1.1.1
