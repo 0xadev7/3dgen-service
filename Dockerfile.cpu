@@ -13,7 +13,7 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 
 # CPU wheels (torch/torchvision stay in requirements.txt here)
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
 COPY app ./app
 COPY scripts ./scripts
