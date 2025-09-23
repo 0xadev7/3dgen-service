@@ -1,23 +1,37 @@
+# --- FastAPI / server ---
 fastapi==0.114.2
 uvicorn[standard]==0.30.6
 omegaconf==2.3.0
+pyyaml==6.0.2
 
-torch==2.3.1+cu121 ; sys_platform == 'linux' and platform_machine == 'x86_64'
---extra-index-url https://download.pytorch.org/whl/cu121
+# --- Core ML stacks (match Torch 2.3.x; avoid NumPy 2.x issues) ---
+# Keep numpy <2 to dodge many-ecosystem rough edges on Py3.10
+numpy==1.26.4
+scipy==1.11.4
+Pillow==10.3.0
 
-transformers>=4.43.0
-diffusers>=0.30.0
-accelerate>=0.33.0
-safetensors>=0.4.3
+# HF ecosystem
+transformers==4.44.2
+tokenizers>=0.15.2
+diffusers==0.30.0
+accelerate==0.33.0
+safetensors==0.4.3
+huggingface_hub==0.24.5
 
-onnxruntime-gpu>=1.18.0
-open_clip_torch>=2.24.0
-huggingface_hub>=0.24.0
+# Background removal (GPU)
+# 1.18.1 supports Py3.10 well and works fine alongside CUDA 12.1 base
+onnxruntime-gpu==1.18.1
 
-numpy
-Pillow
-trimesh
-scipy
-pyyaml
-plyfile
-tripoSR>=0.1.0
+# CLIP
+open_clip_torch==2.24.0
+
+# Geometry / IO
+trimesh==4.4.3
+plyfile==1.0.3
+
+# Optional: TripoSR (commented out because some envs have wheel issues)
+# If you want to install from PyPI and it works in your env, uncomment:
+# tripoSR>=0.1.0
+
+# If the PyPI package isn't available for your arch, install from GitHub at build time:
+# pip install git+https://github.com/VAST-AI-Research/TripoSR.git
