@@ -4,53 +4,57 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/models/hf \
     TORCH_HOME=/models/torch \
-    TRIPOSR_DIR=/opt/TripoSR
+    TRIPOSR_DIR=/opt/TripoSR \
+    CUDA_HOME=/usr/local/cuda
 
-# libs for imaging; osmesa helps headless GL if you later enable pyrender
+# libs for imaging; + toolchain for CUDA extensions (new: ninja, cmake, python3-dev)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
-    && rm -rf /var/lib/apt/lists/*
+    ninja-build cmake python3-dev \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ---- Python deps from your project (keep your torch from base image) ----
+# ---- Your project deps (do not overwrite Torch from base) ----
 COPY requirements.txt ./requirements.txt
-RUN sed -i '/^torch==/d;/^torchvision==/d;/^torch==/d' requirements.txt && \
-    pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+RUN sed -i '/^torch==/d;/^torchvision==/d;/^torch==/d' requirements.txt \
+ && pip install --upgrade pip setuptools wheel \
+ && pip install -r requirements.txt
 
 # ---- Get TripoSR code (not pip-installable) ----
 ARG TRIPOSR_REF=main
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git ${TRIPOSR_DIR}
 
-# Install TripoSR's runtime deps
-# (TripoSR requires torchmcubes; sometimes the wheel lacks CUDA, so reinstall from source if needed.)
-RUN pip install -r ${TRIPOSR_DIR}/requirements.txt \
- && python - <<'PY'
-import importlib, subprocess, sys
-try:
-    m = importlib.import_module("torchmcubes")
-    # Try a quick smoke-check that it loads; if it fails, reinstall from source:
-    _ = getattr(m, "__version__", "ok")
-except Exception as e:
-    print("Reinstalling torchmcubes from source due to:", e, file=sys.stderr)
-    subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "torchmcubes"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/tatsy/torchmcubes.git"])
+# ---- Install TripoSR deps ----
+# First install what the repo wants…
+RUN pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
+
+# …then force a known-good torchmcubes build from source (common CUDA fix)
+# Adjust TORCH_CUDA_ARCH_LIST for your GPUs if you want faster builds.
+RUN pip uninstall -y torchmcubes || true \
+ && TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" \
+    MAX_JOBS=4 \
+    pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
+
+# Quick smoke test so failures happen at build time, not runtime
+RUN python - <<'PY'
+import torch, torchmcubes
+print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
+print("torchmcubes:", getattr(torchmcubes, "__version__", "git"))
 PY
 
-# (Optional) pre-download TripoSR model weights into the cache during build
+# ---- (Optional) Pre-download model weights into HF cache ----
 ARG HF_TOKEN
 ENV HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
 RUN python - <<'PY'
 from huggingface_hub import snapshot_download
-import os
-home = os.environ.get("HF_HOME","/models/hf")
-for repo in [
+repos = [
     "stabilityai/TripoSR",
     "openai/clip-vit-base-patch32",    # validation
     "briaai/RMBG-1.4",                 # background removal
     "black-forest-labs/FLUX.1-schnell" # t2i
-]:
+]
+for repo in repos:
     try:
         snapshot_download(repo_id=repo, local_dir=None)
         print("Warmed:", repo)
@@ -58,13 +62,9 @@ for repo in [
         print("Warm fail:", repo, e)
 PY
 
-# Your app
+# ---- Your app ----
 COPY app ./app
 COPY scripts ./scripts
 
-# Example: run TripoSR once at container start (adjust to your API/server flow)
-# CMD below assumes scripts/start.sh will eventually call TripoSR.
-# For a direct test you could use:
-#   python ${TRIPOSR_DIR}/run.py ${TRIPOSR_DIR}/examples/chair.png --output-dir /tmp/out
 EXPOSE 8000
 CMD ["/bin/bash","-lc","/app/scripts/start.sh"]
