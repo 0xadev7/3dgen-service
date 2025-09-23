@@ -5,20 +5,45 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/models/hf \
     TORCH_HOME=/models/torch
 
+# libs for imaging; osmesa helps headless GL if you later enable pyrender
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 \
+    git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt ./requirements.txt
 
-# Torch/CUDA already in base image; do not reinstall torch/torchvision
+# Install Python deps (strip torch/torchvision if present, to not overwrite CUDA build)
+COPY requirements.txt ./requirements.txt
 RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt && \
     pip install --no-cache-dir -r requirements.txt
 
+RUN pip install --no-cache-dir "git+https://github.com/Stability-AI/TripoSR@main#egg=tripoSR"
+
+# (Optional) pre-download TripoSR model weights into the cache during build
+#   pass a token only if required by your HF account for the repo
+#   docker build --build-arg HF_TOKEN=hf_xxx .
+ARG HF_TOKEN
+ENV HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+RUN python - <<'PY'
+from huggingface_hub import snapshot_download
+import os
+home = os.environ.get("HF_HOME","/models/hf")
+# Pre-warm these to cut first-request latency:
+for repo in [
+    "stabilityai/TripoSR",
+    "openai/clip-vit-base-patch32",                         # validation
+    "briaai/RMBG-1.4",                                      # background removal
+    "black-forest-labs/FLUX.1-schnell"                      # t2i
+]:
+    try:
+        snapshot_download(repo_id=repo, local_dir=None)     # downloads to HF cache
+        print("Warmed:", repo)
+    except Exception as e:
+        print("Warm fail:", repo, e)
+PY
+
 COPY app ./app
 COPY scripts ./scripts
-# COPY .env.runpod .env  # prefer setting env in Runpod UI
 
 EXPOSE 8000
 CMD ["/bin/bash","-lc","/app/scripts/start.sh"]
