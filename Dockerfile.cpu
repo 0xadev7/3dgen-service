@@ -1,0 +1,24 @@
+FROM python:3.10-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/models/hf \
+    TORCH_HOME=/models/torch
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt ./requirements.txt
+
+# CPU wheels (torch/torchvision stay in requirements.txt here)
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+COPY scripts ./scripts
+# (optional) bundle .env for pure-docker local runs:
+# COPY .env.local .env
+
+EXPOSE 8000
+CMD ["/bin/bash","-lc","/app/scripts/start.sh"]

@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: 3dgen-cpu:latest
+    container_name: 3dgen_cpu
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.local
+    environment:
+      - HF_HOME=/models/hf
+      - TORCH_HOME=/models/torch
+    volumes:
+      - model_cache:/models
+    command: ["/bin/bash","-lc","/app/scripts/start.sh"]
+
+volumes:
+  model_cache:
+    driver: local
