@@ -3,7 +3,8 @@ FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/models/hf \
-    TORCH_HOME=/models/torch
+    TORCH_HOME=/models/torch \
+    TRIPOSR_DIR=/opt/TripoSR
 
 # libs for imaging; osmesa helps headless GL if you later enable pyrender
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,38 +13,58 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python deps (strip torch/torchvision if present, to not overwrite CUDA build)
+# ---- Python deps from your project (keep your torch from base image) ----
 COPY requirements.txt ./requirements.txt
-RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt && \
+RUN sed -i '/^torch==/d;/^torchvision==/d;/^torch==/d' requirements.txt && \
+    pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-RUN pip install --no-cache-dir "git+https://github.com/VAST-AI-Research/TripoSR@main#egg=tripoSR"
+# ---- Get TripoSR code (not pip-installable) ----
+ARG TRIPOSR_REF=main
+RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git ${TRIPOSR_DIR}
+
+# Install TripoSR's runtime deps
+# (TripoSR requires torchmcubes; sometimes the wheel lacks CUDA, so reinstall from source if needed.)
+RUN pip install -r ${TRIPOSR_DIR}/requirements.txt \
+ && python - <<'PY'
+import importlib, subprocess, sys
+try:
+    m = importlib.import_module("torchmcubes")
+    # Try a quick smoke-check that it loads; if it fails, reinstall from source:
+    _ = getattr(m, "__version__", "ok")
+except Exception as e:
+    print("Reinstalling torchmcubes from source due to:", e, file=sys.stderr)
+    subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "torchmcubes"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/tatsy/torchmcubes.git"])
+PY
 
 # (Optional) pre-download TripoSR model weights into the cache during build
-#   pass a token only if required by your HF account for the repo
-#   docker build --build-arg HF_TOKEN=hf_xxx .
 ARG HF_TOKEN
 ENV HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
 RUN python - <<'PY'
 from huggingface_hub import snapshot_download
 import os
 home = os.environ.get("HF_HOME","/models/hf")
-# Pre-warm these to cut first-request latency:
 for repo in [
     "stabilityai/TripoSR",
-    "openai/clip-vit-base-patch32",                         # validation
-    "briaai/RMBG-1.4",                                      # background removal
-    "black-forest-labs/FLUX.1-schnell"                      # t2i
+    "openai/clip-vit-base-patch32",    # validation
+    "briaai/RMBG-1.4",                 # background removal
+    "black-forest-labs/FLUX.1-schnell" # t2i
 ]:
     try:
-        snapshot_download(repo_id=repo, local_dir=None)     # downloads to HF cache
+        snapshot_download(repo_id=repo, local_dir=None)
         print("Warmed:", repo)
     except Exception as e:
         print("Warm fail:", repo, e)
 PY
 
+# Your app
 COPY app ./app
 COPY scripts ./scripts
 
+# Example: run TripoSR once at container start (adjust to your API/server flow)
+# CMD below assumes scripts/start.sh will eventually call TripoSR.
+# For a direct test you could use:
+#   python ${TRIPOSR_DIR}/run.py ${TRIPOSR_DIR}/examples/chair.png --output-dir /tmp/out
 EXPOSE 8000
 CMD ["/bin/bash","-lc","/app/scripts/start.sh"]

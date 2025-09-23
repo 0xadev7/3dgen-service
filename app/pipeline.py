@@ -29,7 +29,7 @@ class GaussianProcessor:
         cut = remove_bg(models["rmbg"], img, self.cfg)
 
         # 3) reconstruct
-        mesh = image_to_mesh(models["tripo"], cut)
+        mesh = image_to_mesh(None, cut)
 
         # 4) to gaussians
         ply = mesh_to_gaussians(mesh, self.cfg.splat_samples, self.cfg.splat_opacity)
@@ -43,7 +43,7 @@ class GaussianProcessor:
         while score < self.cfg.clip_threshold and tries < self.cfg.max_retries and not self.cfg.fast_debug:
             img = text2image(models["pipe"], self.prompt, self.cfg, seed=self.cfg.seed + tries + 1)
             cut = remove_bg(models["rmbg"], img, self.cfg)
-            mesh = image_to_mesh(models["tripo"], cut)
+            mesh = image_to_mesh(None, cut)
             ply = mesh_to_gaussians(mesh, self.cfg.splat_samples, self.cfg.splat_opacity)
             preview = render_mesh_preview(mesh, 448, 448)
             score = clip_score(models["clip_model"], models["clip_proc"], self.prompt, preview)

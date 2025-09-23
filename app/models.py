@@ -35,18 +35,6 @@ def load_rmbg(cfg: GenConfig, device: torch.device):
     model.eval()
     return model
 
-def load_tripo(cfg: GenConfig, device: torch.device):
-    try:
-        from tripoSR import TripoSR
-        tsr = TripoSR.from_pretrained(cfg.tripo_model_id, config_name="config.yaml")
-        tsr.to(device)
-        tsr.eval()
-        return tsr
-    except Exception as e:
-        raise RuntimeError(
-            "Failed to load TripoSR. Ensure 'tripoSR' is installed and GPU is available."
-        ) from e
-
 def load_t2i(cfg: GenConfig, device: torch.device):
     # Flux.1-schnell works via diffusers AutoPipelineForText2Image
     dtype = torch.float16 if (device.type == "cuda" and cfg.t2i_dtype.lower()=="fp16") else torch.float32
@@ -69,11 +57,9 @@ def load_models(cfg: GenConfig) -> Models:
     pipe = load_t2i(cfg, device)
     rmbg = load_rmbg(cfg, device)
     clip_model, clip_proc = load_clip(device)
-    tripo = load_tripo(cfg, device)
     return {
         "pipe": pipe,
         "clip_model": clip_model,
         "clip_proc": clip_proc,
         "rmbg": rmbg,
-        "tripo": tripo,
     }
