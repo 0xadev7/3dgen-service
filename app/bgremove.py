@@ -6,13 +6,16 @@ import numpy as np
 
 @torch.no_grad()
 def remove_bg(model, img: Image.Image, cfg: GenConfig) -> Image.Image:
-    # BRIA RMBG expects normalized tensor
+    # FAST_DEBUG or intentionally skipped model load: pass-through
+    if model is None:
+        return img.convert("RGB")
+
     device = next(model.parameters()).device
     img_rgb = img.convert("RGB")
     im = np.array(img_rgb).astype(np.float32) / 255.0
     x = torch.from_numpy(im).permute(2,0,1).unsqueeze(0).to(device)
-    # forward
-    pred = model(x)[0]  # (B,1,H,W) with trust_remote_code
+    # forward (trust_remote_code model returns logits mask)
+    pred = model(x)[0]
     pred = torch.sigmoid(pred)
     m = pred[0,0].detach().cpu().numpy()
     m = (m - m.min()) / (m.max() - m.min() + 1e-6)
