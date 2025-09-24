@@ -58,4 +58,15 @@ COPY scripts ./scripts
 # Optional: set TRIPOSR_DIR for your app code
 ENV TRIPOSR_DIR=/opt/TripoSR
 
+# Runpod
+ENV NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    HF_HUB_CACHE=/runpod-volume/hf/hub \
+    TRANSFORMERS_CACHE=/runpod-volume/hf/transformers \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TMPDIR=/runpod-volume/tmp
+RUN mkdir -p $HF_HOME $HF_HUB_CACHE $TRANSFORMERS_CACHE $TORCH_HOME $XDG_CACHE_HOME $HF_DATASETS_CACHE $TMPDIR
+
 CMD ["python", "-u", "-m", "app.serverless.handler"] 

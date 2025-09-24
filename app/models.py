@@ -41,6 +41,10 @@ def load_t2i(cfg: GenConfig, device: torch.device):
     pipe = AutoPipelineForText2Image.from_pretrained(
         cfg.t2i_model_id,
         torch_dtype=dtype,
+        use_safetensors=True,
+        variant="fp16",
+        cache_dir=os.getenv("HF_HUB_CACHE") or os.getenv("HF_HOME"),
+        resume_download=True,
     )
     pipe.to(device)
     pipe.set_progress_bar_config(disable=True)
