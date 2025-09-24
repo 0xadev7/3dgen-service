@@ -9,9 +9,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     PIP_NO_CACHE_DIR=1
 
-# Common pins
+# Common pins (edit here)
 ARG PIN_TRANSFORMERS=">=4.48.2,<5"
-ARG PIN_DIFFUSERS=">=0.30,<1"
+ARG PIN_DIFFUSERS="==0.29.2"
 ARG PIN_ACCELERATE=">=0.33"
 ARG PIN_HUB=">=0.24.6,<1"
 ARG PIN_TOKENIZERS=">=0.15"
@@ -19,8 +19,9 @@ ARG PIN_SAFETENSORS=">=0.4"
 ARG PIN_SENTENCEPIECE=">=0.1.99"
 ARG PIN_PROTOBUF=">=3.20,<6"
 ARG PIN_XFORMERS="==0.0.28.post3"
+ARG PIN_TORCHVISION="==0.18.1"
 ARG TRIPOSR_REF="main"
-ARG CUDA_ARCHES="8.0;8.6;8.9;9.0"
+ARG CUDA_ARCHES="8.0;8.6;8.9"
 
 WORKDIR /app
 
@@ -75,6 +76,11 @@ RUN pip wheel -w /wheelhouse \
     "protobuf${PIN_PROTOBUF}" \
     "xformers${PIN_XFORMERS}"
 
+# 2b) TorchVision (from official cu121 index; no deps so we don’t accidentally pull CPU builds)
+RUN pip wheel -w /wheelhouse --no-deps \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    "torchvision${PIN_TORCHVISION}"
+
 # 3) TripoSR: wheel its deps (don’t install yet)
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
 RUN sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
@@ -123,14 +129,12 @@ COPY --from=builder /wheelhouse /wheelhouse
 COPY requirements.txt /tmp/requirements.txt
 COPY --from=builder /opt/TripoSR /opt/TripoSR
 
-# Install: wheels first, then network fallback; finally re-pin core libs
+# Install: wheels first; no git fallbacks in runtime; then re-pin core libs
 RUN python -m pip install --upgrade pip setuptools wheel \
  && pip install --no-index --find-links=/wheelhouse -r /tmp/requirements.txt || true \
  && pip install --no-index --find-links=/wheelhouse -r /opt/TripoSR/requirements.txt || true \
  && pip install --no-index --find-links=/wheelhouse torchmcubes* || true \
- # fallbacks (only if some wheels missing)
- && pip install -r /tmp/requirements.txt \
- && pip install -r /opt/TripoSR/requirements.txt \
+ && pip install --no-index --find-links=/wheelhouse "torchvision${PIN_TORCHVISION}" \
  # FINAL RE-PINS (force exact versions after anything TripoSR may have pulled)
  && pip install --no-cache-dir --upgrade --upgrade-strategy eager --force-reinstall \
       "transformers${PIN_TRANSFORMERS}" \
@@ -141,27 +145,45 @@ RUN python -m pip install --upgrade pip setuptools wheel \
       "tokenizers${PIN_TOKENIZERS}" \
       "sentencepiece${PIN_SENTENCEPIECE}" \
       "protobuf${PIN_PROTOBUF}" \
-      "xformers${PIN_XFORMERS}"
+      "xformers${PIN_XFORMERS}" \
+      "torchvision${PIN_TORCHVISION}"
 
 # ---------- SANITY CHECKS (fail fast) ----------
 RUN python - <<'PY'
-import importlib, torch, transformers, diffusers, huggingface_hub
+import importlib, sys
+import torch, transformers, diffusers, huggingface_hub
 print("torch:", torch.__version__, "cuda:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
 print("diffusers:", diffusers.__version__)
 print("transformers:", transformers.__version__)
 print("huggingface_hub:", huggingface_hub.__version__)
+
+# torchvision must exist and be compatible
+import torchvision, torchvision.ops
+print("torchvision:", torchvision.__version__)
+import torch as _t
+try:
+    torchvision.ops.nms(_t.rand(5,4), _t.rand(5), 0.5)
+    print("torchvision.ops.nms OK")
+except Exception as e:
+    print("torchvision.ops.nms FAILED:", e); sys.exit(1)
+
 # 1) UMT5EncoderModel presence (AuraFlow requires this at import time)
 assert hasattr(transformers, "UMT5EncoderModel"), "UMT5EncoderModel missing (need transformers >= 4.48)"
-# 2) AuraFlow module imports (comment this out if PIN_DIFFUSERS == 0.29.2)
+
+# 2) AuraFlow module imports (comment out if PIN_DIFFUSERS == 0.29.2)
 importlib.import_module("diffusers.pipelines.aura_flow.pipeline_aura_flow")
+
 # 3) tokenizers / sentencepiece check
 from tokenizers import Tokenizer
 from transformers import T5Tokenizer
-T5Tokenizer.from_pretrained("google/umt5-small")  # tiny tokenizer-only model
+T5Tokenizer.from_pretrained("google/umt5-small")  # tokenizer-only repo; no big weights
+
 # 4) CLIP classes
 from transformers import CLIPModel, CLIPProcessor
-# 5) xformers is present
+
+# 5) xformers present
 import xformers, xformers.ops
+
 # 6) diffusers API presence
 from diffusers import AutoPipelineForText2Image
 print("SANITY CHECKS PASSED")
