@@ -33,7 +33,10 @@ RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Resea
 
 # --- TripoSR deps (skip torchmcubes in file; compile ourselves) ---
 RUN sed -i '/torchmcubes/d' ${TRIPOSR_DIR}/requirements.txt \
-    && pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt
+    && printf "huggingface-hub>=0.24.6,<1\n" > /tmp/constraints.txt \
+    && sed -i 's/^transformers==.*/transformers>=4.35,<5/' ${TRIPOSR_DIR}/requirements.txt \
+    && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d' ${TRIPOSR_DIR}/requirements.txt \
+    && pip install --no-cache-dir -r ${TRIPOSR_DIR}/requirements.txt -c /tmp/constraints.txt --upgrade --upgrade-strategy eager
 
 # Build torchmcubes from source with valid arches
 # A100: 8.0 | RTX 30xx: 8.6 | Ada/L40/RTX 6000 Ada: 8.9 | (add ;9.0 for H100)
