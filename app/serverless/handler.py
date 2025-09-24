@@ -6,6 +6,7 @@ import os
 import traceback
 import threading
 from typing import Any, Dict, Tuple
+import logging
 
 import runpod
 
@@ -14,6 +15,10 @@ from ..config import get_config
 from ..models import load_models
 from ..pipeline import GaussianProcessor
 
+logging.basicConfig(
+    level=logging.INFO,  # or DEBUG for very detailed timings
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 # -----------------------
 # Globals / init guards
@@ -44,7 +49,11 @@ def _extract_input(event: Dict[str, Any]) -> Dict[str, Any]:
     """
     RunPod usually passes {"input": {...}}; fall back to top-level for flexibility.
     """
-    if isinstance(event, dict) and "input" in event and isinstance(event["input"], dict):
+    if (
+        isinstance(event, dict)
+        and "input" in event
+        and isinstance(event["input"], dict)
+    ):
         return event["input"]
     return event
 
@@ -65,7 +74,9 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
 
-def _success_response(content_type: str, data: bytes, filename: str | None = None) -> Dict[str, Any]:
+def _success_response(
+    content_type: str, data: bytes, filename: str | None = None
+) -> Dict[str, Any]:
     resp = {
         "ok": True,
         "content_type": content_type,
@@ -150,9 +161,17 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
         prompt, ret = _validate_inputs(data)
 
         # Use preloaded models if available; otherwise minimal placeholders
-        models = MODELS if MODELS is not None else {
-            "pipe": None, "clip_model": None, "clip_proc": None, "rmbg": None, "tripo": None
-        }
+        models = (
+            MODELS
+            if MODELS is not None
+            else {
+                "pipe": None,
+                "clip_model": None,
+                "clip_proc": None,
+                "rmbg": None,
+                "tripo": None,
+            }
+        )
 
         gp = GaussianProcessor(CFG, prompt)
 
@@ -166,7 +185,9 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
         # Default: PLY
         buf = io.BytesIO()
         gp.get_gs_model().save_ply(buf)
-        return _success_response("application/octet-stream", buf.getvalue(), filename="model.ply")
+        return _success_response(
+            "application/octet-stream", buf.getvalue(), filename="model.ply"
+        )
 
     except ValueError as ve:
         return _error_response(str(ve), status=400)

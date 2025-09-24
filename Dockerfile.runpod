@@ -1,15 +1,16 @@
-# =========================
-# Stage 0: Base (anchor)
-# =========================
-ARG TORCH_IMAGE="pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel"
-FROM ${TORCH_IMAGE} AS base
+# syntax=docker/dockerfile:1.7
+
+############################################
+# Stage 0: Builder (CUDA devel + toolchain)
+############################################
+ARG CUDA_VER=12.1.1
+FROM nvidia/cuda:${CUDA_VER}-cudnn8-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    CUDA_HOME=/usr/local/cuda \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
 
-# Common pins (edit here)
+# ---- Core pins ----
 ARG PIN_TRANSFORMERS=">=4.48.2,<5"
 ARG PIN_DIFFUSERS="==0.29.2"
 ARG PIN_ACCELERATE=">=0.33"
@@ -19,27 +20,30 @@ ARG PIN_SAFETENSORS=">=0.4"
 ARG PIN_SENTENCEPIECE=">=0.1.99"
 ARG PIN_PROTOBUF=">=3.20,<6"
 ARG PIN_XFORMERS="==0.0.28.post3"
-ARG PIN_TORCHVISION="==0.18.1"
+ARG PIN_TORCH="==2.3.1+cu121"
+ARG PIN_TORCHVISION="==0.18.1+cu121"
 ARG TRIPOSR_REF="main"
-ARG CUDA_ARCHES="8.0;8.6;8.9"
+
+# If you only need native GPU arch for torchmcubes, leave empty.
+ARG CUDA_ARCHES_NATIVE=""
+ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES_NATIVE}"
 
 WORKDIR /app
 
-
-# =========================
-# Stage 1: Builder
-# =========================
-FROM base AS builder
-
-# --- APT with safe TMPDIR (/var/tmp), since NV may be mounted noexec ---
-RUN mkdir -p /var/tmp && chmod 1777 /tmp /var/tmp \
- && TMPDIR=/var/tmp apt-get update \
- && TMPDIR=/var/tmp apt-get install -y --no-install-recommends \
-      git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
-      ninja-build cmake python3-dev ca-certificates \
+# --- System deps for building wheels and minimal runtime libs ---
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-dev python3-pip python3-venv \
+      build-essential git ca-certificates \
+      ninja-build cmake \
+      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
  && rm -rf /var/lib/apt/lists/*
 
-# Caches (created AFTER apt so we can set TMPDIR safely later)
+# Speedy pip
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --upgrade pip setuptools wheel
+
+# External caches (kept on the host volume at runtime, not baked into layers)
 ENV NV=/runpod-volume \
     HF_HOME=/runpod-volume/hf \
     HF_HUB_CACHE=/runpod-volume/hf/hub \
@@ -50,93 +54,22 @@ ENV NV=/runpod-volume \
     TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
 RUN mkdir -p $HF_HOME $HF_HUB_CACHE $HF_DATASETS_CACHE $TORCH_HOME $XDG_CACHE_HOME $TMPDIR
 
-# Wheel cache
+# Wheel staging area (we’ll copy to runtime, install, then delete)
 RUN mkdir -p /wheelhouse
 
-# Bring app requirements
+# App reqs
 COPY requirements.txt /tmp/requirements.txt
 
-# Tooling
-RUN python -m pip install --upgrade pip setuptools wheel
+# (A) Build wheels for your app requirements (no network during runtime)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip wheel -w /wheelhouse -r /tmp/requirements.txt
 
-# 1) Build wheels for app reqs
-RUN pip wheel -w /wheelhouse -r /tmp/requirements.txt
-
-# 2) Core pins (ensure exact wheels exist)
-RUN pip wheel -w /wheelhouse \
-    "transformers${PIN_TRANSFORMERS}" \
-    "diffusers${PIN_DIFFUSERS}" \
-    "accelerate${PIN_ACCELERATE}" \
-    "huggingface-hub${PIN_HUB}" \
-    "safetensors${PIN_SAFETENSORS}" \
-    "tokenizers${PIN_TOKENIZERS}" \
-    "sentencepiece${PIN_SENTENCEPIECE}" \
-    "protobuf${PIN_PROTOBUF}" \
-    "xformers${PIN_XFORMERS}"
-
-# 2b) TorchVision (from official cu121 index; no deps so we don’t accidentally pull CPU builds)
-RUN pip wheel -w /wheelhouse --no-deps \
-    --index-url https://download.pytorch.org/whl/cu121 \
-    "torchvision${PIN_TORCHVISION}"
-
-# 3) TripoSR: wheel its deps (don’t install yet)
-RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
-RUN sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
- && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
-RUN pip wheel -w /wheelhouse -r /opt/TripoSR/requirements.txt
-
-# 4) torchmcubes: build wheel with arches
-RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES}" MAX_JOBS=4 \
-    pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
-
-
-# =========================
-# Stage 2: Runtime
-# =========================
-FROM ${TORCH_IMAGE} AS runtime
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    CUDA_HOME=/usr/local/cuda \
-    PIP_NO_CACHE_DIR=1
-
-# --- APT with safe TMPDIR (/var/tmp) ---
-RUN mkdir -p /var/tmp && chmod 1777 /tmp /var/tmp \
- && TMPDIR=/var/tmp apt-get update \
- && TMPDIR=/var/tmp apt-get install -y --no-install-recommends \
-      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-# Caches (set AFTER apt)
-ENV NV=/runpod-volume \
-    HF_HOME=/runpod-volume/hf \
-    HF_HUB_CACHE=/runpod-volume/hf/hub \
-    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
-    TORCH_HOME=/runpod-volume/torch \
-    XDG_CACHE_HOME=/runpod-volume/.cache \
-    TMPDIR=/runpod-volume/tmp \
-    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-
-WORKDIR /app
-RUN mkdir -p $HF_HOME $HF_HUB_CACHE $HF_DATASETS_CACHE $TORCH_HOME $XDG_CACHE_HOME $TMPDIR
-
-# Wheels + files from builder
-COPY --from=builder /wheelhouse /wheelhouse
-COPY requirements.txt /tmp/requirements.txt
-COPY --from=builder /opt/TripoSR /opt/TripoSR
-
-# Install: wheels first; no git fallbacks in runtime; then re-pin core libs
-RUN python -m pip install --upgrade pip setuptools wheel \
- && pip install --no-index --find-links=/wheelhouse -r /tmp/requirements.txt || true \
- && pip install --no-index --find-links=/wheelhouse -r /opt/TripoSR/requirements.txt || true \
- && pip install --no-index --find-links=/wheelhouse torchmcubes* || true \
- && pip install --no-index --find-links=/wheelhouse "torchvision${PIN_TORCHVISION}" \
- # FINAL RE-PINS (force exact versions after anything TripoSR may have pulled)
- && pip install --no-cache-dir --upgrade --upgrade-strategy eager --force-reinstall \
+# (B) Build wheels for pinned libs (except torch/torchvision; install those in runtime from the CUDA index)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip wheel -w /wheelhouse \
       "transformers${PIN_TRANSFORMERS}" \
       "diffusers${PIN_DIFFUSERS}" \
       "accelerate${PIN_ACCELERATE}" \
@@ -145,11 +78,93 @@ RUN python -m pip install --upgrade pip setuptools wheel \
       "tokenizers${PIN_TOKENIZERS}" \
       "sentencepiece${PIN_SENTENCEPIECE}" \
       "protobuf${PIN_PROTOBUF}" \
-      "xformers${PIN_XFORMERS}" \
-      "torchvision${PIN_TORCHVISION}"
+      "xformers${PIN_XFORMERS}"
 
-# ---------- SANITY CHECKS (fail fast) ----------
-RUN python - <<'PY'
+# (C) TripoSR deps -> wheels (no torch/vision pins inside)
+RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
+ && rm -rf /opt/TripoSR/.git /opt/TripoSR/tests /opt/TripoSR/examples || true \
+ && sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
+ && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip wheel -w /wheelhouse -r /opt/TripoSR/requirements.txt
+
+# (D) torchmcubes wheel (compiled)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    MAX_JOBS=4 pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
+
+
+############################################
+# Stage 1: Runtime (CUDA runtime, small)
+############################################
+FROM nvidia/cuda:${CUDA_VER}-cudnn8-runtime-ubuntu22.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CUDA_HOME=/usr/local/cuda
+
+# Minimal runtime OS deps
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip ca-certificates \
+      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Python tools
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --upgrade pip setuptools wheel
+
+# External caches (host volume)
+ENV NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    HF_HUB_CACHE=/runpod-volume/hf/hub \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    TMPDIR=/runpod-volume/tmp \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+WORKDIR /app
+RUN mkdir -p $HF_HOME $HF_HUB_CACHE $HF_DATASETS_CACHE $TORCH_HOME $XDG_CACHE_HOME $TMPDIR
+
+# Bring only what we need from builder
+COPY --from=builder /wheelhouse /wheelhouse
+COPY requirements.txt /tmp/requirements.txt
+COPY --from=builder /opt/TripoSR /opt/TripoSR
+
+# (1) Install torch/torchvision from the official CUDA 12.1 index
+ARG PIN_TORCH="==2.3.1+cu121"
+ARG PIN_TORCHVISION="==0.18.1+cu121"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+      "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+
+# (2) Install everything else from local wheels (no network)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-index --find-links=/wheelhouse -r /tmp/requirements.txt || true \
+ && pip install --no-index --find-links=/wheelhouse -r /opt/TripoSR/requirements.txt || true \
+ && pip install --no-index --find-links=/wheelhouse torchmcubes* || true \
+ && pip install --no-index --find-links=/wheelhouse \
+      "transformers${PIN_TRANSFORMERS}" \
+      "diffusers${PIN_DIFFUSERS}" \
+      "accelerate${PIN_ACCELERATE}" \
+      "huggingface-hub${PIN_HUB}" \
+      "safetensors${PIN_SAFETENSORS}" \
+      "tokenizers${PIN_TOKENIZERS}" \
+      "sentencepiece${PIN_SENTENCEPIECE}" \
+      "protobuf${PIN_PROTOBUF}" \
+      "xformers${PIN_XFORMERS}"
+
+# Reclaim space: wheelhouse, caches, docs
+RUN rm -rf /wheelhouse /root/.cache /usr/share/doc/* /usr/share/man/* /var/cache/ldconfig/*
+
+# (Optional) strip debug symbols where safe (best-effort)
+RUN find /usr/local/lib/python3.10/dist-packages -type f -name "*.so*" -exec sh -c 'file -h "{}" | grep -q ELF && strip --strip-unneeded "{}" || true' \; 2>/dev/null || true
+
+# ---------- SANITY CHECKS ----------
+RUN python3 - <<'PY'
 import importlib, sys
 import torch, transformers, diffusers, huggingface_hub
 print("torch:", torch.__version__, "cuda:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
@@ -157,7 +172,6 @@ print("diffusers:", diffusers.__version__)
 print("transformers:", transformers.__version__)
 print("huggingface_hub:", huggingface_hub.__version__)
 
-# torchvision must exist and be compatible
 import torchvision, torchvision.ops
 print("torchvision:", torchvision.__version__)
 import torch as _t
@@ -167,21 +181,20 @@ try:
 except Exception as e:
     print("torchvision.ops.nms FAILED:", e); sys.exit(1)
 
-# 1) UMT5EncoderModel presence (AuraFlow requires this at import time)
+# 1) Transformers UMT5
 assert hasattr(transformers, "UMT5EncoderModel"), "UMT5EncoderModel missing (need transformers >= 4.48)"
 
-# 2) AuraFlow module imports (comment out if PIN_DIFFUSERS == 0.29.2)
+# 2) AuraFlow (comment if not needed with your diffusers pin)
 importlib.import_module("diffusers.pipelines.aura_flow.pipeline_aura_flow")
 
-# 3) tokenizers / sentencepiece check
-from tokenizers import Tokenizer
+# 3) Tokenizers / sentencepiece check
 from transformers import T5Tokenizer
-T5Tokenizer.from_pretrained("google/umt5-small")  # tokenizer-only repo; no big weights
+T5Tokenizer.from_pretrained("google/umt5-small")
 
-# 4) CLIP classes
+# 4) CLIP
 from transformers import CLIPModel, CLIPProcessor
 
-# 5) xformers present
+# 5) xformers
 import xformers, xformers.ops
 
 # 6) diffusers API presence
@@ -194,13 +207,4 @@ COPY app ./app
 COPY scripts ./scripts
 ENV TRIPOSR_DIR=/opt/TripoSR
 
-CMD ["python", "-u", "-m", "app.serverless.handler"]
-
-
-# =========================
-# Optional: debug target
-# =========================
-FROM runtime AS debug
-RUN TMPDIR=/var/tmp apt-get update \
- && TMPDIR=/var/tmp apt-get install -y --no-install-recommends git vim less procps \
- && rm -rf /var/lib/apt/lists/*
+CMD ["python3", "-u", "-m", "app.serverless.handler"]
