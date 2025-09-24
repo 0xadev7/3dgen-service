@@ -1,0 +1,195 @@
+# ---------------------------
+# Stage 0: Base image anchor
+# ---------------------------
+ARG TORCH_IMAGE="pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel"
+FROM ${TORCH_IMAGE} AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    CUDA_HOME=/usr/local/cuda \
+    PIP_NO_CACHE_DIR=1
+
+# Shared cache dirs (you can still mount /runpod-volume at runtime)
+ENV NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    HF_HUB_CACHE=/runpod-volume/hf/hub \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    TMPDIR=/runpod-volume/tmp \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+WORKDIR /app
+
+# Common pins (edit here)
+ARG PIN_TRANSFORMERS=">=4.48.2,<5"
+ARG PIN_DIFFUSERS=">=0.30,<1"    # use ==0.29.2 to avoid AuraFlow entirely
+ARG PIN_ACCELERATE=">=0.33"
+ARG PIN_HUB=">=0.24.6,<1"
+ARG PIN_TOKENIZERS=">=0.15"
+ARG PIN_SAFETENSORS=">=0.4"
+ARG PIN_SENTENCEPIECE=">=0.1.99"
+ARG PIN_PROTOBUF=">=3.20,<6"
+ARG PIN_XFORMERS="==0.0.28.post3"
+ARG TRIPOSR_REF="main"
+ARG CUDA_ARCHES="8.0;8.6;8.9"    # add ;9.0 for H100
+
+
+# -------------------------------------
+# Stage 1: Builder (compile-only stuff)
+# -------------------------------------
+FROM base AS builder
+
+# System build deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
+    ninja-build cmake python3-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Ensure cache dirs exist for the build (optional)
+RUN mkdir -p $HF_HOME $HF_HUB_CACHE $HF_DATASETS_CACHE $TORCH_HOME $XDG_CACHE_HOME $TMPDIR
+
+# Use a wheelhouse to cache artifacts between stages
+RUN mkdir -p /wheelhouse
+COPY requirements.txt /tmp/requirements.txt
+
+# Upgrade pip tooling
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# 1) Build wheels for your requirements.txt (no uninstall here)
+RUN pip wheel -w /wheelhouse -r /tmp/requirements.txt
+
+# 2) Core pins (make sure these exact versions are available as wheels)
+RUN pip wheel -w /wheelhouse \
+    "transformers${PIN_TRANSFORMERS}" \
+    "diffusers${PIN_DIFFUSERS}" \
+    "accelerate${PIN_ACCELERATE}" \
+    "huggingface-hub${PIN_HUB}" \
+    "safetensors${PIN_SAFETENSORS}" \
+    "tokenizers${PIN_TOKENIZERS}" \
+    "sentencepiece${PIN_SENTENCEPIECE}" \
+    "protobuf${PIN_PROTOBUF}" \
+    "xformers${PIN_XFORMERS}"
+
+# 3) TripoSR deps (build wheels only, don’t install yet)
+RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
+RUN sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
+ && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
+RUN pip wheel -w /wheelhouse -r /opt/TripoSR/requirements.txt
+
+# 4) torchmcubes (needs devel toolchain) — build wheel and keep it
+RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES}" MAX_JOBS=4 \
+    pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
+
+
+# --------------------------------------
+# Stage 2: Runtime (small, no toolchain)
+# --------------------------------------
+# You can switch to cudnn-runtime image to slim further; we keep the same base for CUDA libs match
+FROM ${TORCH_IMAGE} AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    CUDA_HOME=/usr/local/cuda \
+    PIP_NO_CACHE_DIR=1
+
+# Minimal runtime libs (no compilers)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Same cache envs
+ENV NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    HF_HUB_CACHE=/runpod-volume/hf/hub \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    TMPDIR=/runpod-volume/tmp \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+WORKDIR /app
+RUN mkdir -p $HF_HOME $HF_HUB_CACHE $HF_DATASETS_CACHE $TORCH_HOME $XDG_CACHE_HOME $TMPDIR
+
+# Bring wheelhouse from builder
+COPY --from=builder /wheelhouse /wheelhouse
+
+# Install from wheels first; network only if a wheel is missing
+RUN python -m pip install --upgrade pip setuptools wheel \
+ && pip install --no-index --find-links=/wheelhouse -r /wheelhouse/../tmp/requirements.txt 2>/dev/null || true \
+ && pip install --no-index --find-links=/wheelhouse \
+      "transformers${PIN_TRANSFORMERS}" \
+      "diffusers${PIN_DIFFUSERS}" \
+      "accelerate${PIN_ACCELERATE}" \
+      "huggingface-hub${PIN_HUB}" \
+      "safetensors${PIN_SAFETENSORS}" \
+      "tokenizers${PIN_TOKENIZERS}" \
+      "sentencepiece${PIN_SENTENCEPIECE}" \
+      "protobuf${PIN_PROTOBUF}" \
+      "xformers${PIN_XFORMERS}" || true \
+ && pip install --no-index --find-links=/wheelhouse -r /opt/TripoSR/requirements.txt 2>/dev/null || true \
+ # fallback to network if something not in wheelhouse (rare)
+ && pip install -r /wheelhouse/../tmp/requirements.txt \
+ && pip install \
+      "transformers${PIN_TRANSFORMERS}" \
+      "diffusers${PIN_DIFFUSERS}" \
+      "accelerate${PIN_ACCELERATE}" \
+      "huggingface-hub${PIN_HUB}" \
+      "safetensors${PIN_SAFETENSORS}" \
+      "tokenizers${PIN_TOKENIZERS}" \
+      "sentencepiece${PIN_SENTENCEPIECE}" \
+      "protobuf${PIN_PROTOBUF}" \
+      "xformers${PIN_XFORMERS}"
+
+# Copy TripoSR sources (used at runtime) from builder
+COPY --from=builder /opt/TripoSR /opt/TripoSR
+
+# Install torchmcubes from built wheel
+RUN pip install --no-index --find-links=/wheelhouse torchmcubes* \
+ || pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
+
+# ---------- SANITY CHECKS (fail fast) ----------
+RUN python - <<'PY'
+import os, sys, importlib
+import torch, transformers, diffusers, huggingface_hub
+print("torch:", torch.__version__, "cuda:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
+print("diffusers:", diffusers.__version__)
+print("transformers:", transformers.__version__)
+print("huggingface_hub:", huggingface_hub.__version__)
+
+# 1) UMT5EncoderModel presence
+assert hasattr(transformers, "UMT5EncoderModel"), "UMT5EncoderModel missing (need transformers >= 4.48)"
+# 2) AuraFlow import (comment this if you pin diffusers==0.29.2)
+importlib.import_module("diffusers.pipelines.aura_flow.pipeline_aura_flow")
+# 3) tokenizers/sentencepiece
+from tokenizers import Tokenizer
+from transformers import T5Tokenizer
+T5Tokenizer.from_pretrained("google/umt5-small")
+# 4) CLIP classes
+from transformers import CLIPModel, CLIPProcessor
+# 5) xformers present
+import xformers, xformers.ops
+# 6) Auto pipeline import ok
+from diffusers import AutoPipelineForText2Image
+print("SANITY CHECKS PASSED")
+PY
+
+# ---------- your app ----------
+# (COPY at the end to maximize layer cache)
+COPY app ./app
+COPY scripts ./scripts
+
+ENV TRIPOSR_DIR=/opt/TripoSR
+CMD ["python", "-u", "-m", "app.serverless.handler"]
+
+
+# ---------------------------
+# Optional: debug target
+# ---------------------------
+FROM runtime AS debug
+# Add small extras you might want during investigation
+RUN apt-get update && apt-get install -y --no-install-recommends git vim less procps && rm -rf /var/lib/apt/lists/*
