@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import io
 import os
+import traceback
+import threading
 from typing import Any, Dict, Tuple
 
 import runpod
@@ -14,10 +16,13 @@ from ..pipeline import GaussianProcessor
 
 
 # -----------------------
-# Globals (initialized in init())
+# Globals / init guards
 # -----------------------
 CFG = None
 MODELS = None
+
+_INIT_DONE = False
+_INIT_LOCK = threading.Lock()
 
 
 # -----------------------
@@ -29,8 +34,10 @@ def _maybe_configure_hf_cache() -> None:
     steer Hugging Face caches to the persistent volume.
     """
     if os.path.isdir("/runpod-volume"):
-        # Keep it simple; you can also set HF_HUB_CACHE/TRANSFORMERS_CACHE if you want
         os.environ.setdefault("HF_HOME", "/runpod-volume/hf")
+        # Optional (uncomment if you use them elsewhere):
+        # os.environ.setdefault("HF_HUB_CACHE", "/runpod-volume/hf/hub")
+        # os.environ.setdefault("TRANSFORMERS_CACHE", "/runpod-volume/hf/transformers")
 
 
 def _extract_input(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -74,66 +81,101 @@ def _error_response(message: str, status: int = 400) -> Dict[str, Any]:
 
 
 # -----------------------
-# Lifecycle
+# Robust one-time init
+# -----------------------
+def _init_once() -> None:
+    """
+    Idempotent, thread-safe init. Safe to call from both the SDK lifecycle hook and the handler.
+    """
+    global _INIT_DONE, CFG, MODELS
+    if _INIT_DONE:
+        return
+
+    with _INIT_LOCK:
+        if _INIT_DONE:  # double-checked locking
+            return
+
+        print("[init] starting...")
+        try:
+            _maybe_configure_hf_cache()
+            CFG = get_config()
+
+            # Respect your fast_debug behavior: skip heavy preload
+            if getattr(CFG, "fast_debug", False):
+                MODELS = None
+                print("[init] fast_debug=True -> skipping model preload.")
+            else:
+                try:
+                    MODELS = load_models(CFG)
+                    print("[init] Models preloaded.")
+                except Exception as e:
+                    MODELS = None
+                    print(f"[init] Model preload failed: {e}\n{traceback.format_exc()}")
+                    print("[init] Proceeding with lazy/minimal models in handler.")
+
+            _INIT_DONE = True
+            print("[init] ready.")
+        except Exception as e:
+            # Do NOT set _INIT_DONE True on fatal error; allow handler to retry
+            print(f"[init] fatal error: {e}\n{traceback.format_exc()}")
+            raise
+
+
+# -----------------------
+# SDK lifecycle hook
 # -----------------------
 def init():
     """
-    Called once per worker start. Preload config and (optionally) models.
+    Called once per worker start in serverless mode.
+    If the SDK ever skips this, handler() also calls _init_once().
     """
-    global CFG, MODELS
-
-    _maybe_configure_hf_cache()
-
-    CFG = get_config()
-    try:
-        # Respect your original fast_debug behavior
-        if getattr(CFG, "fast_debug", False):
-            MODELS = None
-            print("[init] fast_debug=True -> skipping model preload.")
-        else:
-            MODELS = load_models(CFG)
-            print("[init] Models preloaded.")
-    except Exception as e:
-        # If preload fails, keep MODELS=None; handler() will create the minimal stubs
-        MODELS = None
-        print(f"[init] Model preload failed: {e}. Will proceed with lazy/minimal models.")
+    _init_once()
 
 
 # -----------------------
 # Handler
 # -----------------------
 def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Main Runpod handler. Always ensures initialization before processing.
+    """
+    # Ensure init even if lifecycle hook wasn't called
+    try:
+        _init_once()
+    except Exception:
+        return _error_response("Initialization failed", status=500)
+
     try:
         data = _extract_input(event)
         prompt, ret = _validate_inputs(data)
 
-        # Prepare models: use preloaded if present, otherwise minimal stubs
+        # Use preloaded models if available; otherwise minimal placeholders
         models = MODELS if MODELS is not None else {
             "pipe": None, "clip_model": None, "clip_proc": None, "rmbg": None, "tripo": None
         }
 
         gp = GaussianProcessor(CFG, prompt)
-        # 1 training step as in the original code
+
+        # Train for 1 step as in the original code
         gp.train(models, 1)
 
         if ret == "png":
             png_bytes = gp.get_preview_png()
-            # Optional name; UI may use it for saving
             return _success_response("image/png", png_bytes, filename="preview.png")
 
         # Default: PLY
         buf = io.BytesIO()
         gp.get_gs_model().save_ply(buf)
-        ply_bytes = buf.getvalue()
-        return _success_response("application/octet-stream", ply_bytes, filename="model.ply")
+        return _success_response("application/octet-stream", buf.getvalue(), filename="model.ply")
 
     except ValueError as ve:
         return _error_response(str(ve), status=400)
     except Exception as e:
-        # Avoid leaking internals; print full details to logs, return compact error to caller
-        print(f"[handler] Unexpected error: {e}")
+        print(f"[handler] Unexpected error: {e}\n{traceback.format_exc()}")
         return _error_response("Internal error during generation.", status=500)
 
 
+# -----------------------
 # Start RunPod serverless
+# -----------------------
 runpod.serverless.start({"handler": handler, "init": init})
