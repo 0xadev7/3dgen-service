@@ -9,18 +9,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     PIP_NO_CACHE_DIR=1
 
-# Shared cache dirs (you can still mount /runpod-volume at runtime)
-ENV NV=/runpod-volume \
-    HF_HOME=/runpod-volume/hf \
-    HF_HUB_CACHE=/runpod-volume/hf/hub \
-    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
-    TORCH_HOME=/runpod-volume/torch \
-    XDG_CACHE_HOME=/runpod-volume/.cache \
-    TMPDIR=/runpod-volume/tmp \
-    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-
 WORKDIR /app
 
 # Common pins
@@ -47,6 +35,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
     ninja-build cmake python3-dev ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+
+# Shared cache dirs (you can still mount /runpod-volume at runtime)
+ENV NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    HF_HUB_CACHE=/runpod-volume/hf/hub \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    TMPDIR=/runpod-volume/tmp \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 # Ensure cache dirs exist for the build (optional)
 RUN mkdir -p $HF_HOME $HF_HUB_CACHE $HF_DATASETS_CACHE $TORCH_HOME $XDG_CACHE_HOME $TMPDIR
