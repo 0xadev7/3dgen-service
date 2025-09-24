@@ -5,7 +5,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TORCH_HOME=/models/torch \
     TRIPOSR_DIR=/opt/TripoSR \
     CUDA_HOME=/usr/local/cuda \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # runtime speed/UX
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    # runpod volume caches
+    NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TMPDIR=/runpod-volume/tmp \
+    # reduce CUDA alloc fragmentation
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 # Imaging libs + toolchain for CUDA extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,23 +26,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# --- Your deps ---
+# ---------- Python deps you control ----------
 COPY requirements.txt ./requirements.txt
+# We pin/ensure the core stack + sentencepiece (fixes tokenizer error) + xformers (speed)
 RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt \
     && python -m pip install --upgrade pip setuptools wheel \
-    && pip uninstall -y diffusers transformers huggingface-hub accelerate safetensors || true \
+    # wipe any pre-pins from earlier layers
+    && pip uninstall -y diffusers transformers huggingface-hub accelerate safetensors tokenizers || true \
+    # your reqs
     && pip install --no-cache-dir -r requirements.txt \
+    # core pins that matter for speed + tokenizer
+    && pip install --no-cache-dir \
+         "transformers>=4.43,<5" \
+         "diffusers>=0.30,<1" \
+         "accelerate>=0.33" \
+         "safetensors>=0.4" \
+         "tokenizers>=0.15" \
+         "sentencepiece>=0.1.99" \
+         "protobuf>=3.20,<6" \
+         "huggingface-hub>=0.24.6,<1" \
+         # good prebuilt for torch 2.3.1 cu121; if this fails on your host, remove it (pipeline still works)
+         "xformers==0.0.28.post3" \
     && python - <<'PY'
-import diffusers, huggingface_hub
+import diffusers, huggingface_hub, transformers, torch
+print("torch:", torch.__version__, "cuda:", torch.version.cuda)
 print("diffusers:", diffusers.__version__)
+print("transformers:", transformers.__version__)
 print("huggingface_hub:", huggingface_hub.__version__)
 PY
 
-# --- Get TripoSR code ---
+# ---------- TripoSR ----------
 ARG TRIPOSR_REF=main
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git ${TRIPOSR_DIR}
 
-# --- TripoSR deps (skip torchmcubes in file; compile ourselves) ---
+# TripoSR deps (skip torchmcubes in file; compile ourselves)
 RUN sed -i '/torchmcubes/d' ${TRIPOSR_DIR}/requirements.txt \
     && printf "huggingface-hub>=0.24.6,<1\n" > /tmp/constraints.txt \
     && sed -i 's/^transformers==.*/transformers>=4.35,<5/' ${TRIPOSR_DIR}/requirements.txt \
@@ -49,24 +77,14 @@ print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "CUDA available:
 print("torchmcubes:", getattr(torchmcubes, "__version__", "git"))
 PY
 
-# --- DO NOT pre-warm HF in the image (saves GBs). Cache at runtime on a volume. ---
-
 # Your app (keep context small with .dockerignore)
 COPY app ./app
 COPY scripts ./scripts
 
+# Ensure caches exist on the volume
+RUN mkdir -p $HF_HOME $TORCH_HOME $XDG_CACHE_HOME $HF_DATASETS_CACHE $TMPDIR
+
 # Optional: set TRIPOSR_DIR for your app code
 ENV TRIPOSR_DIR=/opt/TripoSR
 
-# Runpod
-ENV NV=/runpod-volume \
-    HF_HOME=/runpod-volume/hf \
-    HF_HUB_CACHE=/runpod-volume/hf/hub \
-    TRANSFORMERS_CACHE=/runpod-volume/hf/transformers \
-    TORCH_HOME=/runpod-volume/torch \
-    XDG_CACHE_HOME=/runpod-volume/.cache \
-    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
-    TMPDIR=/runpod-volume/tmp
-RUN mkdir -p $HF_HOME $HF_HUB_CACHE $TRANSFORMERS_CACHE $TORCH_HOME $XDG_CACHE_HOME $HF_DATASETS_CACHE $TMPDIR
-
-CMD ["python", "-u", "-m", "app.serverless.handler"] 
+CMD ["python", "-u", "-m", "app.serverless.handler"]
