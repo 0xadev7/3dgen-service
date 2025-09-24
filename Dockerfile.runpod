@@ -23,9 +23,9 @@ ENV NV=/runpod-volume \
 
 WORKDIR /app
 
-# Common pins (edit here)
+# Common pins
 ARG PIN_TRANSFORMERS=">=4.48.2,<5"
-ARG PIN_DIFFUSERS=">=0.30,<1"    # use ==0.29.2 to avoid AuraFlow entirely
+ARG PIN_DIFFUSERS=">=0.30,<1"
 ARG PIN_ACCELERATE=">=0.33"
 ARG PIN_HUB=">=0.24.6,<1"
 ARG PIN_TOKENIZERS=">=0.15"
@@ -34,7 +34,7 @@ ARG PIN_SENTENCEPIECE=">=0.1.99"
 ARG PIN_PROTOBUF=">=3.20,<6"
 ARG PIN_XFORMERS="==0.0.28.post3"
 ARG TRIPOSR_REF="main"
-ARG CUDA_ARCHES="8.0;8.6;8.9"    # add ;9.0 for H100
+ARG CUDA_ARCHES="8.0;8.6;8.9;9.0"
 
 
 # -------------------------------------
