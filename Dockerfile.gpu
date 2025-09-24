@@ -33,13 +33,10 @@ COPY requirements.txt ./requirements.txt
 # We pin/ensure the core stack + sentencepiece (fixes tokenizer error) + xformers (speed)
 RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt \
     && python -m pip install --upgrade pip setuptools wheel \
-    # wipe any pre-pins from earlier layers
     && pip uninstall -y diffusers transformers huggingface-hub accelerate safetensors tokenizers || true \
-    # your reqs
     && pip install --no-cache-dir -r requirements.txt \
-    # core pins that matter for speed + tokenizer
     && pip install --no-cache-dir \
-    "transformers>=4.46,<5" \
+    "transformers>=4.48.2,<5" \
     "diffusers>=0.30,<1" \
     "accelerate>=0.33" \
     "safetensors>=0.4" \
@@ -49,11 +46,14 @@ RUN sed -i '/^torch==/d;/^torchvision==/d' requirements.txt \
     "huggingface-hub>=0.24.6,<1" \
     "xformers==0.0.28.post3" || true \
     && python - <<'PY'
+from importlib import import_module
 import diffusers, huggingface_hub, transformers, torch
 print("torch:", torch.__version__, "cuda:", torch.version.cuda)
 print("diffusers:", diffusers.__version__)
 print("transformers:", transformers.__version__)
-print("huggingface_hub:", huggingface_hub.__version__)
+# sanity check: UMT5EncoderModel exists
+UMT5EncoderModel = getattr(import_module("transformers"), "UMT5EncoderModel", None)
+print("UMT5EncoderModel present:", UMT5EncoderModel is not None)
 PY
 
 # ---------- TripoSR ----------
