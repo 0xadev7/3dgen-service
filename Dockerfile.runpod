@@ -131,7 +131,6 @@ RUN python -m pip install --upgrade pip setuptools wheel \
  # fallbacks (only if some wheels missing)
  && pip install -r /tmp/requirements.txt \
  && pip install -r /opt/TripoSR/requirements.txt \
- && pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git \
  # FINAL RE-PINS (force exact versions after anything TripoSR may have pulled)
  && pip install --no-cache-dir --upgrade --upgrade-strategy eager --force-reinstall \
       "transformers${PIN_TRANSFORMERS}" \
