@@ -5,26 +5,28 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TORCH_HOME=/models/torch \
     TRIPOSR_DIR=/opt/TripoSR \
     CUDA_HOME=/usr/local/cuda \
-    PIP_NO_CACHE_DIR=1 \
-    # runtime speed/UX
-    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
-    # runpod volume caches
-    NV=/runpod-volume \
-    HF_HOME=/runpod-volume/hf \
-    TORCH_HOME=/runpod-volume/torch \
-    XDG_CACHE_HOME=/runpod-volume/.cache \
-    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
-    TMPDIR=/runpod-volume/tmp \
-    # reduce CUDA alloc fragmentation
-    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+    PIP_NO_CACHE_DIR=1
 
-# Imaging libs + toolchain for CUDA extensions
+# Install system deps FIRST (TMPDIR still defaults to /tmp)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
     ninja-build cmake python3-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Now set runpod volume-backed caches (including TMPDIR)
+ENV NV=/runpod-volume \
+    HF_HOME=/runpod-volume/hf \
+    TORCH_HOME=/runpod-volume/torch \
+    XDG_CACHE_HOME=/runpod-volume/.cache \
+    HF_DATASETS_CACHE=/runpod-volume/hf/datasets \
+    TMPDIR=/runpod-volume/tmp \
+    TRANSFORMERS_NO_ADVISORY_WARNINGS=1 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+# Make sure those dirs exist for runtime
+RUN mkdir -p $HF_HOME $TORCH_HOME $XDG_CACHE_HOME $HF_DATASETS_CACHE $TMPDIR
 
 # ---------- Python deps you control ----------
 COPY requirements.txt ./requirements.txt
@@ -80,9 +82,6 @@ PY
 # Your app (keep context small with .dockerignore)
 COPY app ./app
 COPY scripts ./scripts
-
-# Ensure caches exist on the volume
-RUN mkdir -p $HF_HOME $TORCH_HOME $XDG_CACHE_HOME $HF_DATASETS_CACHE $TMPDIR
 
 # Optional: set TRIPOSR_DIR for your app code
 ENV TRIPOSR_DIR=/opt/TripoSR
