@@ -6,7 +6,7 @@ diffusers==0.31.0
 transformers==4.44.2
 accelerate==0.34.2
 safetensors==0.4.5
-huggingface-hub==0.24.6
+huggingface-hub>=0.24.6
 protobuf<5
 
 # Geometry & 3D
