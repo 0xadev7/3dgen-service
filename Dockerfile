@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-distutils python3.10-dev python3.10-venv \
-    python3-pip git curl ca-certificates build-essential ninja-build \
+    python3-pip git curl ca-certificates build-essential ninja-build git-lfs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
@@ -30,25 +30,58 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-cache models to avoid HF downloads at runtime
 
-# 1) FLUX
-RUN python3 - <<'PY'
+# 1) FLUX (private-ready)
+RUN --mount=type=secret,id=hf_token,env=HF_TOKEN python3 - <<'PY'
+import os
+from huggingface_hub import login
 from diffusers import FluxPipeline
-FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-schnell")
+
+tok = os.getenv("HF_TOKEN")
+if tok:
+    try:
+        login(tok)
+    except Exception as e:
+        print("HF login warning:", e)
+
+FluxPipeline.from_pretrained(
+    os.getenv("FLUX_MODEL_ID","black-forest-labs/FLUX.1-schnell"),
+    token=tok
+)
 print("cached FLUX")
 PY
 
-# 2) RMBG
-RUN python3 - <<'PY'
+# 2) RMBG (private-ready)
+RUN --mount=type=secret,id=hf_token,env=HF_TOKEN python3 - <<'PY'
+import os
+from huggingface_hub import login
 from transformers import AutoImageProcessor, AutoModelForImageSegmentation
-AutoImageProcessor.from_pretrained("briaai/RMBG-1.4")
-AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4")
+
+tok = os.getenv("HF_TOKEN")
+if tok:
+    try:
+        login(tok)
+    except Exception as e:
+        print("HF login warning:", e)
+
+AutoImageProcessor.from_pretrained("briaai/RMBG-1.4", token=tok)
+AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4", token=tok)
 print("cached RMBG")
 PY
 
-# 3) TripoSR
-RUN python3 - <<'PY'
+# 3) TripoSR (private-ready)
+RUN --mount=type=secret,id=hf_token,env=HF_TOKEN python3 - <<'PY'
+import os
+from huggingface_hub import login
 from tsr.system import TSR
-TSR.from_pretrained("stabilityai/TripoSR")
+
+tok = os.getenv("HF_TOKEN")
+if tok:
+    try:
+        login(tok)
+    except Exception as e:
+        print("HF login warning:", e)
+
+TSR.from_pretrained(os.getenv("TRIPOSR_MODEL_ID","stabilityai/TripoSR"), token=tok)
 print("cached TripoSR")
 PY
 

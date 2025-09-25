@@ -3,7 +3,9 @@ set -euo pipefail
 IMAGE="${IMAGE:-yourrepo/plysvc:latest}"
 
 echo "Building $IMAGE"
-docker build -t "$IMAGE" .
+DOCKER_BUILDKIT=1 docker build \
+  --secret id=hf_token,env=HF_TOKEN \
+  -t "$IMAGE" .
 
 echo "Pushing $IMAGE"
 docker push "$IMAGE"
