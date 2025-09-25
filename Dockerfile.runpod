@@ -168,13 +168,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Reclaim space: wheelhouse, caches, docs
 RUN rm -rf /wheelhouse /root/.cache /usr/share/doc/* /usr/share/man/* /var/cache/ldconfig/*
 
-# (Optional) strip debug symbols where safe (best-effort)
-RUN find /usr/local/lib/python3.10/dist-packages \
-    \( -path '*/torch/*' -o -path '*/torchvision/*' -o -path '*/xformers/*' \
-    -o -path '*/triton/*' -o -path '*/nvidia/*' -o -path '*/sentencepiece/*' \) -prune \
-    -o -type f -name '*.so*' -exec sh -c 'file -h "{}" | grep -q ELF && strip --strip-unneeded "{}" || true' \; \
-    2>/dev/null || true
-
 # ---------- SANITY CHECKS ----------
 RUN python3 - <<'PY'
 import importlib, sys
