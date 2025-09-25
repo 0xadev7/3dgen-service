@@ -1,0 +1,3 @@
+[serverless]
+entry = "python3 -m app.serverless"
+gpu = true

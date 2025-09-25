@@ -1,24 +1,53 @@
-FROM python:3.10-slim
+FROM nvidia/cuda:12.1.1-cudnn9-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HF_HOME=/models/hf \
-    TORCH_HOME=/models/torch
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/root/.cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface \
+    MPLCONFIGDIR=/tmp/matplotlib
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 \
+    python3.10 python3.10-distutils python3-pip git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-COPY requirements.txt ./requirements.txt
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# CPU wheels (torch/torchvision stay in requirements.txt here)
-RUN pip install -r requirements.txt
+WORKDIR /workspace
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY runpod.toml ./runpod.toml
+COPY README.md ./README.md
 COPY scripts ./scripts
-# (optional) bundle .env for pure-docker local runs:
-# COPY .env.local .env
 
-EXPOSE 8000
-CMD ["/bin/bash","-lc","/app/scripts/start.sh"]
+# Pre-cache HF models to avoid cold downloads at runtime.
+RUN python3 - <<'PY'\
+from diffusers import FluxPipeline\n\
+FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-schnell")\n\
+print("cached FLUX")\n\
+PY
+
+RUN python3 - <<'PY'\
+from transformers import AutoImageProcessor, AutoModelForImageSegmentation\n\
+AutoImageProcessor.from_pretrained("briaai/RMBG-1.4")\n\
+AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4")\n\
+print("cached RMBG")\n\
+PY
+
+RUN python3 - <<'PY'\
+from tsr.system import TSR\n\
+TSR.from_pretrained("stabilityai/TripoSR")\n\
+print("cached TripoSR")\n\
+PY
+
+RUN python3 -m app.sanity_check
+
+ENV LOG_LEVEL=INFO
+ENV RMBG_MODE=torch
+ENV FLUX_MODEL_ID=black-forest-labs/FLUX.1-schnell
+ENV TRIPOSR_MODEL_ID=stabilityai/TripoSR
+
+CMD ["python3", "-m", "app.serverless"]
