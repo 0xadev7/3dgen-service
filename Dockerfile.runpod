@@ -17,33 +17,29 @@ ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES_NATIVE}"
 # ensure external cache dirs exist (mktemp/TMPDIR safety)
 RUN mkdir -p /runpod-volume/tmp /runpod-volume/hf/hub /runpod-volume/hf/datasets /runpod-volume/torch /runpod-volume/.cache || true
 
-# --- APT HEALTH MACRO (locks + dpkg recovery) ---
-# (use this before each apt-get sequence)
+# small helper to clear apt locks *before* any apt command
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN echo 'set -euxo pipefail; \
-  apt-get clean; \
   rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock-frontend || true; \
   mkdir -p /var/cache/apt/archives/partial; \
-  dpkg --configure -a || true' >/usr/local/bin/_apt_recover && chmod +x /usr/local/bin/_apt_recover
+  dpkg --configure -a || true' >/usr/local/bin/_apt_unlock && chmod +x /usr/local/bin/_apt_unlock
 
-# certs + gnupg FIRST
-RUN --mount=type=cache,target=/var/cache/apt \
-  _apt_recover && \
-  TMPDIR=/tmp apt-get update && \
-  apt-get install -y --no-install-recommends ca-certificates gnupg && \
-  update-ca-certificates && \
-  rm -rf /var/lib/apt/lists/*
+# certs + gnupg FIRST (no apt cache mount to avoid persisting locks)
+RUN _apt_unlock && \
+    TMPDIR=/tmp apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates gnupg && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # toolchain & minimal libs
-RUN --mount=type=cache,target=/var/cache/apt \
-  _apt_recover && \
-  TMPDIR=/tmp apt-get update && \
-  apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-dev build-essential git ninja-build cmake \
-    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
-  rm -rf /var/lib/apt/lists/*
+RUN _apt_unlock && \
+    TMPDIR=/tmp apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-dev build-essential git ninja-build cmake \
+      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
+    rm -rf /var/lib/apt/lists/*
 
-# faster pip
+# faster pip (keep pip cache mount)
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install -U pip setuptools wheel
 
 # install CUDA torch/vision for building C++ extensions
@@ -80,33 +76,30 @@ ENV NV=/runpod-volume HF_HOME=/runpod-volume/hf HF_HUB_CACHE=/runpod-volume/hf/h
     HF_DATASETS_CACHE=/runpod-volume/hf/datasets TORCH_HOME=/runpod-volume/torch \
     XDG_CACHE_HOME=/runpod-volume/.cache TMPDIR=/runpod-volume/tmp
 
-# ensure external cache dirs exist (mktemp/TMPDIR safety)
+# ensure external cache dirs exist
 RUN mkdir -p /runpod-volume/tmp /runpod-volume/hf/hub /runpod-volume/hf/datasets /runpod-volume/torch /runpod-volume/.cache || true
 
-# apt health macro in runtime stage too
+# apt unlock helper in runtime stage too
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN echo 'set -euxo pipefail; \
-  apt-get clean; \
   rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock-frontend || true; \
   mkdir -p /var/cache/apt/archives/partial; \
-  dpkg --configure -a || true' >/usr/local/bin/_apt_recover && chmod +x /usr/local/bin/_apt_recover
+  dpkg --configure -a || true' >/usr/local/bin/_apt_unlock && chmod +x /usr/local/bin/_apt_unlock
 
 # certs + gnupg first
-RUN --mount=type=cache,target=/var/cache/apt \
-  _apt_recover && \
-  TMPDIR=/tmp apt-get update && \
-  apt-get install -y --no-install-recommends ca-certificates gnupg && \
-  update-ca-certificates && \
-  rm -rf /var/lib/apt/lists/*
+RUN _apt_unlock && \
+    TMPDIR=/tmp apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates gnupg && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # minimal runtime deps
-RUN --mount=type=cache,target=/var/cache/apt \
-  _apt_recover && \
-  TMPDIR=/tmp apt-get update && \
-  apt-get install -y --no-install-recommends \
-    python3 python3-pip \
-    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
-  rm -rf /var/lib/apt/lists/*
+RUN _apt_unlock && \
+    TMPDIR=/tmp apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3 python3-pip \
+      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
+    rm -rf /var/lib/apt/lists/*
 
 # faster pip
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install -U pip setuptools wheel
@@ -154,7 +147,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY --from=builder /out/TripoSR /opt/TripoSR
 RUN --mount=type=cache,target=/root/.cache/pip pip install -r /opt/TripoSR/requirements.txt || true
 
-# sanity checks (unchanged)
+# sanity checks (kept)
 RUN python3 - <<'PY'
 import importlib, os, sys
 import torch, transformers, diffusers, huggingface_hub
