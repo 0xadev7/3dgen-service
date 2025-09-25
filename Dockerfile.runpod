@@ -12,12 +12,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # ---- Core pins ----
 ARG PIN_TRANSFORMERS=">=4.48.2,<5"
-ARG PIN_DIFFUSERS="==0.29.2"
+ARG PIN_DIFFUSERS=">=0.30.2,<0.31"
 ARG PIN_ACCELERATE=">=0.33"
 ARG PIN_HUB=">=0.24.6,<1"
-ARG PIN_TOKENIZERS=">=0.15"
+ARG PIN_TOKENIZERS=">=0.20.3"
 ARG PIN_SAFETENSORS=">=0.4"
-ARG PIN_SENTENCEPIECE=">=0.1.99"
+ARG PIN_SENTENCEPIECE=">=0.2.0"
 ARG PIN_PROTOBUF=">=3.20,<6"
 ARG PIN_XFORMERS="==0.0.28.post3"
 ARG PIN_TORCH="==2.3.1+cu121"
@@ -75,7 +75,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       "accelerate${PIN_ACCELERATE}" \
       "huggingface-hub${PIN_HUB}" \
       "safetensors${PIN_SAFETENSORS}" \
-      "tokenizers${PIN_TOKENIZERS}" \
       "sentencepiece${PIN_SENTENCEPIECE}" \
       "protobuf${PIN_PROTOBUF}" \
       "xformers${PIN_XFORMERS}"
@@ -152,7 +151,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       "accelerate${PIN_ACCELERATE}" \
       "huggingface-hub${PIN_HUB}" \
       "safetensors${PIN_SAFETENSORS}" \
-      "tokenizers${PIN_TOKENIZERS}" \
       "sentencepiece${PIN_SENTENCEPIECE}" \
       "protobuf${PIN_PROTOBUF}" \
       "xformers${PIN_XFORMERS}"
