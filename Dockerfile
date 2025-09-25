@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -17,13 +17,16 @@ WORKDIR /workspace
 COPY requirements.txt ./requirements.txt
 
 RUN pip install --no-cache-dir --upgrade cmake ninja scikit-build-core pybind11
-RUN pip install --no-cache-dir torch==2.4.0 torchvision==0.19.0
+# Torch for CUDA 12.4 wheels
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 \
+    torch torchvision
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 xformers
 
 # Clone TripoSR and its deps; add to PYTHONPATH
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
     && pip install --no-cache-dir -r /opt/TripoSR/requirements.txt
 ENV PYTHONPATH=/opt/TripoSR:$PYTHONPATH
-
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
@@ -42,7 +45,6 @@ ENV TRIPOSR_MODEL_ID=stabilityai/TripoSR
 # Default to /runpod-volume; endpoint env will override if needed
 ENV HF_HOME=/runpod-volume/hf \
     HUGGINGFACE_HUB_CACHE=/runpod-volume/hf \
-    TRANSFORMERS_CACHE=/runpod-volume/hf/transformers \
     DIFFUSERS_CACHE=/runpod-volume/hf/diffusers \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     HF_HUB_DISABLE_SYMLINKS_WARNING=1
