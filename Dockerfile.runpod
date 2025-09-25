@@ -33,11 +33,11 @@ WORKDIR /app
 # --- System deps for building wheels and minimal runtime libs ---
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-dev python3-pip python3-venv \
-      build-essential git ca-certificates \
-      ninja-build cmake \
-      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
- && rm -rf /var/lib/apt/lists/*
+    python3 python3-dev python3-pip python3-venv \
+    build-essential git ca-certificates \
+    ninja-build cmake \
+    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Speedy pip
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -70,20 +70,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # (B) Build wheels for pinned libs (except torch/torchvision; install those in runtime from the CUDA index)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel -w /wheelhouse \
-      "transformers${PIN_TRANSFORMERS}" \
-      "diffusers${PIN_DIFFUSERS}" \
-      "accelerate${PIN_ACCELERATE}" \
-      "huggingface-hub${PIN_HUB}" \
-      "safetensors${PIN_SAFETENSORS}" \
-      "sentencepiece${PIN_SENTENCEPIECE}" \
-      "protobuf${PIN_PROTOBUF}" \
-      "xformers${PIN_XFORMERS}"
+    "transformers${PIN_TRANSFORMERS}" \
+    "diffusers${PIN_DIFFUSERS}" \
+    "accelerate${PIN_ACCELERATE}" \
+    "huggingface-hub${PIN_HUB}" \
+    "safetensors${PIN_SAFETENSORS}" \
+    "sentencepiece${PIN_SENTENCEPIECE}" \
+    "protobuf${PIN_PROTOBUF}" \
+    "xformers${PIN_XFORMERS}"
 
 # (C) TripoSR deps -> wheels (no torch/vision pins inside)
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
- && rm -rf /opt/TripoSR/.git /opt/TripoSR/tests /opt/TripoSR/examples || true \
- && sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
- && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
+    && rm -rf /opt/TripoSR/.git /opt/TripoSR/tests /opt/TripoSR/examples || true \
+    && sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
+    && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel -w /wheelhouse -r /opt/TripoSR/requirements.txt
 
@@ -92,7 +92,7 @@ ARG PIN_TORCH="==2.3.1+cu121"
 ARG PIN_TORCHVISION="==0.18.1+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url https://download.pytorch.org/whl/cu121 \
-      "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+    "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 RUN --mount=type=cache,target=/root/.cache/pip \
     CMAKE_PREFIX_PATH="$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)')" \
     TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
@@ -115,9 +115,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Minimal runtime OS deps
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip ca-certificates \
-      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
- && rm -rf /var/lib/apt/lists/*
+    python3 python3-pip ca-certificates \
+    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Python tools
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -148,28 +148,32 @@ ARG PIN_TORCH="==2.3.1+cu121"
 ARG PIN_TORCHVISION="==0.18.1+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
-      "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+    "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 
 # (2) Install everything else from local wheels (no network)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-index --find-links=/wheelhouse -r /tmp/requirements.txt || true \
- && pip install --no-index --find-links=/wheelhouse -r /opt/TripoSR/requirements.txt || true \
- && pip install --no-index --find-links=/wheelhouse torchmcubes* || true \
- && pip install --no-index --find-links=/wheelhouse \
-      "transformers${PIN_TRANSFORMERS}" \
-      "diffusers${PIN_DIFFUSERS}" \
-      "accelerate${PIN_ACCELERATE}" \
-      "huggingface-hub${PIN_HUB}" \
-      "safetensors${PIN_SAFETENSORS}" \
-      "sentencepiece${PIN_SENTENCEPIECE}" \
-      "protobuf${PIN_PROTOBUF}" \
-      "xformers${PIN_XFORMERS}"
+    && pip install --no-index --find-links=/wheelhouse -r /opt/TripoSR/requirements.txt || true \
+    && pip install --no-index --find-links=/wheelhouse torchmcubes* || true \
+    && pip install --no-index --find-links=/wheelhouse \
+    "transformers${PIN_TRANSFORMERS}" \
+    "diffusers${PIN_DIFFUSERS}" \
+    "accelerate${PIN_ACCELERATE}" \
+    "huggingface-hub${PIN_HUB}" \
+    "safetensors${PIN_SAFETENSORS}" \
+    "sentencepiece${PIN_SENTENCEPIECE}" \
+    "protobuf${PIN_PROTOBUF}" \
+    "xformers${PIN_XFORMERS}"
 
 # Reclaim space: wheelhouse, caches, docs
 RUN rm -rf /wheelhouse /root/.cache /usr/share/doc/* /usr/share/man/* /var/cache/ldconfig/*
 
 # (Optional) strip debug symbols where safe (best-effort)
-RUN find /usr/local/lib/python3.10/dist-packages -type f -name "*.so*" -exec sh -c 'file -h "{}" | grep -q ELF && strip --strip-unneeded "{}" || true' \; 2>/dev/null || true
+RUN find /usr/local/lib/python3.10/dist-packages \
+    \( -path '*/torch/*' -o -path '*/torchvision/*' -o -path '*/xformers/*' \
+    -o -path '*/triton/*' -o -path '*/nvidia/*' -o -path '*/sentencepiece/*' \) -prune \
+    -o -type f -name '*.so*' -exec sh -c 'file -h "{}" | grep -q ELF && strip --strip-unneeded "{}" || true' \; \
+    2>/dev/null || true
 
 # ---------- SANITY CHECKS ----------
 RUN python3 - <<'PY'
