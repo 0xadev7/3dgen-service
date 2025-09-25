@@ -24,23 +24,23 @@ COPY README.md ./README.md
 COPY scripts ./scripts
 
 # Pre-cache HF models to avoid cold downloads at runtime.
-RUN python3 - <<'PY'\
-from diffusers import FluxPipeline\n\
-FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-schnell")\n\
-print("cached FLUX")\n\
+RUN python3 - <<'PY'
+from diffusers import FluxPipeline
+FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-schnell")
+print("cached FLUX")
 PY
 
-RUN python3 - <<'PY'\
-from transformers import AutoImageProcessor, AutoModelForImageSegmentation\n\
-AutoImageProcessor.from_pretrained("briaai/RMBG-1.4")\n\
-AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4")\n\
-print("cached RMBG")\n\
+RUN python3 - <<'PY'
+from transformers import AutoImageProcessor, AutoModelForImageSegmentation
+AutoImageProcessor.from_pretrained("briaai/RMBG-1.4")
+AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4")
+print("cached RMBG")
 PY
 
-RUN python3 - <<'PY'\
-from tsr.system import TSR\n\
-TSR.from_pretrained("stabilityai/TripoSR")\n\
-print("cached TripoSR")\n\
+RUN python3 - <<'PY'
+from tsr.system import TSR
+TSR.from_pretrained("stabilityai/TripoSR")
+print("cached TripoSR")
 PY
 
 RUN python3 -m app.sanity_check
