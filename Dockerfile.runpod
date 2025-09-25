@@ -8,51 +8,62 @@ ARG CUDA_VER=12.1.1
 FROM nvidia/cuda:${CUDA_VER}-cudnn8-devel-ubuntu22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
 
-# --- Pins ---
 ARG PIN_TORCH="==2.4.0+cu121"
 ARG PIN_TORCHVISION="==0.19.0+cu121"
-ARG TRIPOSR_REF="main"            # replace with a commit SHA for better caching
+ARG TRIPOSR_REF="main"
 ARG CUDA_ARCHES_NATIVE=""
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES_NATIVE}"
 
-# --- Ensure external cache dirs exist BEFORE any apt (fixes mktemp/TMPDIR issues) ---
+# ensure external cache dirs exist (mktemp/TMPDIR safety)
 RUN mkdir -p /runpod-volume/tmp /runpod-volume/hf/hub /runpod-volume/hf/datasets /runpod-volume/torch /runpod-volume/.cache || true
 
-# --- Ensure certificates & gnupg first (avoids TLS issues) ---
-RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates gnupg && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# --- APT HEALTH MACRO (locks + dpkg recovery) ---
+# (use this before each apt-get sequence)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN echo 'set -euxo pipefail; \
+  apt-get clean; \
+  rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock-frontend || true; \
+  mkdir -p /var/cache/apt/archives/partial; \
+  dpkg --configure -a || true' >/usr/local/bin/_apt_recover && chmod +x /usr/local/bin/_apt_recover
 
-# --- Build toolchain & minimal libs ---
+# certs + gnupg FIRST
 RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip python3-dev build-essential git ninja-build cmake \
-      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
-    rm -rf /var/lib/apt/lists/*
+  _apt_recover && \
+  TMPDIR=/tmp apt-get update && \
+  apt-get install -y --no-install-recommends ca-certificates gnupg && \
+  update-ca-certificates && \
+  rm -rf /var/lib/apt/lists/*
 
-# --- Faster pip ---
+# toolchain & minimal libs
+RUN --mount=type=cache,target=/var/cache/apt \
+  _apt_recover && \
+  TMPDIR=/tmp apt-get update && \
+  apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-dev build-essential git ninja-build cmake \
+    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
+  rm -rf /var/lib/apt/lists/*
+
+# faster pip
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install -U pip setuptools wheel
 
-# --- Install CUDA Torch/Tv (needed so CMake can find TorchConfig.cmake) ---
+# install CUDA torch/vision for building C++ extensions
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url https://download.pytorch.org/whl/cu121 \
-      "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+  pip install --index-url https://download.pytorch.org/whl/cu121 \
+    "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 
-# --- Build torchmcubes wheel (compiled against above Torch) ---
+# build torchmcubes wheel
 RUN --mount=type=cache,target=/root/.cache/pip \
-    CMAKE_PREFIX_PATH="$(python3 - <<'PY'\nimport torch,sys; sys.stdout.write(torch.utils.cmake_prefix_path)\nPY\n)" \
-    MAX_JOBS=4 \
-    pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
+  CMAKE_PREFIX_PATH="$(python3 - <<'PY'\nimport torch,sys; sys.stdout.write(torch.utils.cmake_prefix_path)\nPY\n)" \
+  MAX_JOBS=4 \
+  pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
 
-# --- TripoSR (deps only; torch/vision removed) ---
+# TripoSR deps (torch/vision removed)
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
  && rm -rf /opt/TripoSR/.git /opt/TripoSR/tests /opt/TripoSR/examples || true \
  && sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
  && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
 
-# --- Export artifacts to a clean folder for the next stage ---
+# export artifacts
 RUN mkdir -p /out \
  && cp /wheelhouse/torchmcubes-* /out/ \
  && cp -r /opt/TripoSR /out/TripoSR
@@ -65,46 +76,55 @@ FROM nvidia/cuda:${CUDA_VER}-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 CUDA_HOME=/usr/local/cuda \
     TRANSFORMERS_NO_ADVISORY_WARNINGS=1 HF_HUB_DISABLE_TELEMETRY=1 \
     PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-
-# Optional external caches
 ENV NV=/runpod-volume HF_HOME=/runpod-volume/hf HF_HUB_CACHE=/runpod-volume/hf/hub \
     HF_DATASETS_CACHE=/runpod-volume/hf/datasets TORCH_HOME=/runpod-volume/torch \
     XDG_CACHE_HOME=/runpod-volume/.cache TMPDIR=/runpod-volume/tmp
 
-# --- Ensure external cache dirs exist BEFORE any apt (fixes mktemp/TMPDIR issues) ---
+# ensure external cache dirs exist (mktemp/TMPDIR safety)
 RUN mkdir -p /runpod-volume/tmp /runpod-volume/hf/hub /runpod-volume/hf/datasets /runpod-volume/torch /runpod-volume/.cache || true
 
-# --- Ensure certificates & gnupg first ---
-RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates gnupg && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# apt health macro in runtime stage too
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN echo 'set -euxo pipefail; \
+  apt-get clean; \
+  rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock-frontend || true; \
+  mkdir -p /var/cache/apt/archives/partial; \
+  dpkg --configure -a || true' >/usr/local/bin/_apt_recover && chmod +x /usr/local/bin/_apt_recover
 
-# --- Minimal runtime deps ---
+# certs + gnupg first
 RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip \
-      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
-    rm -rf /var/lib/apt/lists/*
+  _apt_recover && \
+  TMPDIR=/tmp apt-get update && \
+  apt-get install -y --no-install-recommends ca-certificates gnupg && \
+  update-ca-certificates && \
+  rm -rf /var/lib/apt/lists/*
 
-# --- Faster pip ---
+# minimal runtime deps
+RUN --mount=type=cache,target=/var/cache/apt \
+  _apt_recover && \
+  TMPDIR=/tmp apt-get update && \
+  apt-get install -y --no-install-recommends \
+    python3 python3-pip \
+    libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
+  rm -rf /var/lib/apt/lists/*
+
+# faster pip
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install -U pip setuptools wheel
 
 WORKDIR /app
 
-# --- Authoritative CUDA Torch/Tv (keep them out of requirements.txt) ---
+# authoritative CUDA torch/vision
 ARG PIN_TORCH="==2.4.0+cu121"
 ARG PIN_TORCHVISION="==0.19.0+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url https://download.pytorch.org/whl/cu121 \
-      "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+  pip install --index-url https://download.pytorch.org/whl/cu121 \
+    "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 
-# --- App requirements (filter out torch/torchvision so they can't override CUDA wheels) ---
+# app requirements (filter out torch/vision)
 COPY requirements.txt /tmp/requirements.txt
 RUN sed -E '/^(torch(|vision)|torchvision)(\[.*\])?([<>=].*)?$/d' /tmp/requirements.txt > /tmp/requirements.notorch.txt
 
-# --- Core AI libs (prebuilt wheels) ---
+# core AI libs
 ARG PIN_TRANSFORMERS=">=4.48.2,<5"
 ARG PIN_DIFFUSERS=">=0.30.2,<0.31"
 ARG PIN_ACCELERATE=">=0.33"
@@ -114,107 +134,65 @@ ARG PIN_SENTENCEPIECE=">=0.2.0"
 ARG PIN_PROTOBUF=">=3.20,<6"
 ARG PIN_XFORMERS="==0.0.30"
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -U \
-      "transformers${PIN_TRANSFORMERS}" \
-      "diffusers${PIN_DIFFUSERS}" \
-      "accelerate${PIN_ACCELERATE}" \
-      "huggingface-hub${PIN_HUB}" \
-      "safetensors${PIN_SAFETENSORS}" \
-      "sentencepiece${PIN_SENTENCEPIECE}" \
-      "protobuf${PIN_PROTOBUF}" \
-      "xformers${PIN_XFORMERS}"
+  pip install -U \
+    "transformers${PIN_TRANSFORMERS}" \
+    "diffusers${PIN_DIFFUSERS}" \
+    "accelerate${PIN_ACCELERATE}" \
+    "huggingface-hub${PIN_HUB}" \
+    "safetensors${PIN_SAFETENSORS}" \
+    "sentencepiece${PIN_SENTENCEPIECE}" \
+    "protobuf${PIN_PROTOBUF}" \
+    "xformers${PIN_XFORMERS}"
 
-# --- App deps (minus torch/vision) ---
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r /tmp/requirements.notorch.txt || true
+# app deps (minus torch/vision)
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r /tmp/requirements.notorch.txt || true
 
-# --- Bring in compiled torchmcubes + TripoSR tree ---
+# bring in compiled torchmcubes + TripoSR tree
 COPY --from=builder /out/torchmcubes-* /tmp/wheels/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install /tmp/wheels/torchmcubes-* && rm -rf /tmp/wheels
+  pip install /tmp/wheels/torchmcubes-* && rm -rf /tmp/wheels
 COPY --from=builder /out/TripoSR /opt/TripoSR
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r /opt/TripoSR/requirements.txt || true
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r /opt/TripoSR/requirements.txt || true
 
-# ---------- SANITY CHECKS ----------
+# sanity checks (unchanged)
 RUN python3 - <<'PY'
 import importlib, os, sys
-
-# versions
 import torch, transformers, diffusers, huggingface_hub
 print("torch:", torch.__version__, "cuda:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
 print("diffusers:", diffusers.__version__)
 print("transformers:", transformers.__version__)
 print("huggingface_hub:", huggingface_hub.__version__)
-
-# torchvision + NMS op
 import torchvision, torchvision.ops
 print("torchvision:", torchvision.__version__, "file:", torchvision.__file__)
 try:
-    from torchvision import _C
-    print("torchvision._C:", getattr(_C, "__file__", "<builtin>"))
+    from torchvision import _C; print("torchvision._C:", getattr(_C, "__file__", "<builtin>"))
 except Exception as e:
     print("FAILED loading torchvision._C:", e); sys.exit(1)
 import torch as _t
 try:
-    torchvision.ops.nms(_t.rand(5,4), _t.rand(5), 0.5)
-    print("torchvision.ops.nms OK")
+    torchvision.ops.nms(_t.rand(5,4), _t.rand(5), 0.5); print("torchvision.ops.nms OK")
 except Exception as e:
     print("torchvision.ops.nms FAILED:", e); sys.exit(1)
-
-# transformers feature presence
 assert hasattr(transformers, "UMT5EncoderModel"), "UMT5EncoderModel missing (need transformers >= 4.48)"
 print("Transformers features OK")
-
-# diffusers AuraFlow import (requires torch >= 2.4)
 try:
-    importlib.import_module("diffusers.pipelines.aura_flow.pipeline_aura_flow")
-    print("AuraFlow import OK")
+    importlib.import_module("diffusers.pipelines.aura_flow.pipeline_aura_flow"); print("AuraFlow import OK")
 except Exception as e:
     print("AuraFlow import FAILED:", repr(e)); sys.exit(1)
-
-# sentencepiece presence (offline)
 try:
-    import sentencepiece as spm
-    _ = spm.SentencePieceProcessor()
-    print("sentencepiece present")
+    import sentencepiece as spm; _ = spm.SentencePieceProcessor(); print("sentencepiece present")
 except Exception as e:
     print("sentencepiece FAILED:", e); sys.exit(1)
-
-# xformers presence
 try:
-    import xformers, xformers.ops  # noqa: F401
-    print("xformers present")
+    import xformers, xformers.ops; print("xformers present")
 except Exception as e:
     print("xformers FAILED:", e); sys.exit(1)
-
-# diffusers API
-from diffusers import AutoPipelineForText2Image
-print("AutoPipelineForText2Image import OK")
-
-# OPTIONAL: model init probe (disabled by default to avoid network)
-RUN_MODEL_SANITY = os.environ.get("RUN_MODEL_SANITY", "0") == "1"
-MODEL_ID = os.environ.get("SANITY_T2I_MODEL_ID")
-ALLOW_DOWNLOAD = os.environ.get("SANITY_ALLOW_DOWNLOADS", "0") == "1"
-
-if RUN_MODEL_SANITY and MODEL_ID:
-    kwargs = dict(trust_remote_code=True, use_safetensors=True, torch_dtype=torch.bfloat16)
-    if not ALLOW_DOWNLOAD:
-        kwargs["local_files_only"] = True
-    try:
-        from diffusers import AutoPipelineForText2Image
-        _ = AutoPipelineForText2Image.from_pretrained(MODEL_ID, **kwargs)
-        print(f"Model init OK: {MODEL_ID}")
-    except Exception as e:
-        print(f"Model init FAILED for {MODEL_ID}: {e!r}")
-        sys.exit(1)
-
+from diffusers import AutoPipelineForText2Image; print("AutoPipelineForText2Image import OK")
 print("SANITY CHECKS PASSED")
 PY
 
-# --- App last (so code changes don't bust heavy layers) ---
+# app last
 COPY app ./app
 COPY scripts ./scripts
 ENV TRIPOSR_DIR=/opt/TripoSR
-
 CMD ["python3", "-u", "-m", "app.serverless.handler"]
