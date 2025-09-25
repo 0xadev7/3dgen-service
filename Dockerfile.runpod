@@ -9,7 +9,7 @@ FROM nvidia/cuda:${CUDA_VER}-cudnn8-devel-ubuntu22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
 
 ARG PIN_TORCH="==2.4.0+cu121"
-ARG PIN_TORCHVISION="==0.19.0+cu121"
+ARG PIN_TORCHVISION="==0.19.1+cu121"
 ARG TRIPOSR_REF="main"
 ARG CUDA_ARCHES_NATIVE=""
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES_NATIVE}"
@@ -108,7 +108,7 @@ WORKDIR /app
 
 # authoritative CUDA torch/vision
 ARG PIN_TORCH="==2.4.0+cu121"
-ARG PIN_TORCHVISION="==0.19.0+cu121"
+ARG PIN_TORCHVISION="==0.19.1+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
   pip install --index-url https://download.pytorch.org/whl/cu121 \
     "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
