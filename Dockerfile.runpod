@@ -165,6 +165,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     "protobuf${PIN_PROTOBUF}" \
     "xformers${PIN_XFORMERS}"
 
+# Force reinstall torchvision
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+    --upgrade --force-reinstall --no-deps \
+    "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+
 # Reclaim space: wheelhouse, caches, docs
 RUN rm -rf /wheelhouse /root/.cache /usr/share/doc/* /usr/share/man/* /var/cache/ldconfig/*
 
