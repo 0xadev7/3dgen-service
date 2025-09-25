@@ -19,9 +19,9 @@ ARG PIN_TOKENIZERS=">=0.20.3"
 ARG PIN_SAFETENSORS=">=0.4"
 ARG PIN_SENTENCEPIECE=">=0.2.0"
 ARG PIN_PROTOBUF=">=3.20,<6"
-ARG PIN_XFORMERS="==0.0.28.post3"
-ARG PIN_TORCH="==2.3.1+cu121"
-ARG PIN_TORCHVISION="==0.18.1+cu121"
+ARG PIN_XFORMERS="==0.0.30"
+ARG PIN_TORCH="==2.4.0+cu121"
+ARG PIN_TORCHVISION="==0.19.0+cu121"
 ARG TRIPOSR_REF="main"
 
 # If you only need native GPU arch for torchmcubes, leave empty.
@@ -88,8 +88,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel -w /wheelhouse -r /opt/TripoSR/requirements.txt
 
 # (D) Install torch/vision (builder only) so CMake can find Torch; then build torchmcubes
-ARG PIN_TORCH="==2.3.1+cu121"
-ARG PIN_TORCHVISION="==0.18.1+cu121"
+ARG PIN_TORCH="==2.4.0+cu121"
+ARG PIN_TORCHVISION="==0.19.0+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url https://download.pytorch.org/whl/cu121 \
     "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
@@ -144,8 +144,8 @@ COPY requirements.txt /tmp/requirements.txt
 COPY --from=builder /opt/TripoSR /opt/TripoSR
 
 # (1) Install torch/torchvision from the official CUDA 12.1 index
-ARG PIN_TORCH="==2.3.1+cu121"
-ARG PIN_TORCHVISION="==0.18.1+cu121"
+ARG PIN_TORCH="==2.4.0+cu121"
+ARG PIN_TORCHVISION="==0.19.0+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
     "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
