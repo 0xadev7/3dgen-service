@@ -9,7 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MPLCONFIGDIR=/tmp/matplotlib
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3.10-distutils python3-pip git curl ca-certificates build-essential \
+    python3.10 python3.10-distutils python3.10-dev python3.10-venv \
+    python3-pip git curl ca-certificates build-essential ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
@@ -17,11 +18,12 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 WORKDIR /workspace
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade cmake ninja scikit-build-core pybind11
 
 # Clone TripoSR and its deps; add to PYTHONPATH
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
     && pip install --no-cache-dir -r /opt/TripoSR/requirements.txt \
-    && pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git
+    && pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git@b5a5f2c
 ENV PYTHONPATH=/opt/TripoSR:$PYTHONPATH
 
 # Pre-cache models to avoid HF downloads at runtime
