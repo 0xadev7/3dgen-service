@@ -1,75 +1,102 @@
-# syntax=docker/dockerfile:1.7
-
 ARG CUDA_VER=12.1.1
-# ---------- Stage 0: builder (compile only what's needed) ----------
-FROM nvidia/cuda:${CUDA_VER}-cudnn8-devel-ubuntu22.04 AS builder
 
+##############################
+# Stage 0: builder (compile)
+##############################
+FROM nvidia/cuda:${CUDA_VER}-cudnn8-devel-ubuntu22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
-# Versions
+
+# --- Pins ---
 ARG PIN_TORCH="==2.4.0+cu121"
 ARG PIN_TORCHVISION="==0.19.0+cu121"
-ARG TRIPOSR_REF="a1b2c3d4"   # ← pin a commit for caching (replace with real SHA)
+ARG TRIPOSR_REF="main"            # replace with a commit SHA for better caching
 ARG CUDA_ARCHES_NATIVE=""
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHES_NATIVE}"
 
+# --- Ensure certificates & gnupg first (avoids TLS issues) ---
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates gnupg && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Build toolchain & minimal libs ---
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-dev build-essential git ninja-build cmake \
-      ca-certificates && rm -rf /var/lib/apt/lists/*
+      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
+    rm -rf /var/lib/apt/lists/*
 
+# --- Faster pip ---
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install -U pip setuptools wheel
 
-# Install CUDA wheels for build (CMake will need TorchConfig.cmake)
+# --- Install CUDA Torch/Tv (needed so CMake can find TorchConfig.cmake) ---
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url https://download.pytorch.org/whl/cu121 \
       "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 
-# Build torchmcubes wheel
+# --- Build torchmcubes wheel (compiled against above Torch) ---
 RUN --mount=type=cache,target=/root/.cache/pip \
     CMAKE_PREFIX_PATH="$(python3 - <<'PY'\nimport torch,sys; sys.stdout.write(torch.utils.cmake_prefix_path)\nPY\n)" \
     MAX_JOBS=4 \
     pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
 
-# Optional: pre-clone TripoSR (only if you want its reqs cached separately)
+# --- TripoSR (deps only; torch/vision removed) ---
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
  && rm -rf /opt/TripoSR/.git /opt/TripoSR/tests /opt/TripoSR/examples || true \
  && sed -i '/torchmcubes/d' /opt/TripoSR/requirements.txt \
  && sed -i '/^torch==/d;/^torchvision==/d;/^huggingface-hub==/d;/^transformers==/d' /opt/TripoSR/requirements.txt
-# Export only the artifacts needed later
-RUN mkdir -p /out && cp /wheelhouse/torchmcubes-* /out/ && cp -r /opt/TripoSR /out/TripoSR
 
-# ---------- Stage 1: runtime (small final image) ----------
+# --- Export artifacts to a clean folder for the next stage ---
+RUN mkdir -p /out \
+ && cp /wheelhouse/torchmcubes-* /out/ \
+ && cp -r /opt/TripoSR /out/TripoSR
+
+
+##############################
+# Stage 1: runtime (small)
+##############################
 FROM nvidia/cuda:${CUDA_VER}-cudnn8-runtime-ubuntu22.04
-
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 CUDA_HOME=/usr/local/cuda \
     TRANSFORMERS_NO_ADVISORY_WARNINGS=1 HF_HUB_DISABLE_TELEMETRY=1 \
     PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
-# Caches (optional but nice to have on mounted volumes)
+# Optional external caches
 ENV NV=/runpod-volume HF_HOME=/runpod-volume/hf HF_HUB_CACHE=/runpod-volume/hf/hub \
     HF_DATASETS_CACHE=/runpod-volume/hf/datasets TORCH_HOME=/runpod-volume/torch \
     XDG_CACHE_HOME=/runpod-volume/.cache TMPDIR=/runpod-volume/tmp
 
+# --- Ensure certificates & gnupg first ---
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates gnupg && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Minimal runtime deps ---
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip ca-certificates libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 \
-      && rm -rf /var/lib/apt/lists/*
+      python3 python3-pip \
+      libgl1 libglib2.0-0 libxext6 libxrender1 libsm6 libosmesa6 && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Faster pip ---
 RUN --mount=type=cache,target=/root/.cache/pip python3 -m pip install -U pip setuptools wheel
 
 WORKDIR /app
 
-# Install CUDA Torch/Tv (authoritative; keep them out of requirements)
+# --- Authoritative CUDA Torch/Tv (keep them out of requirements.txt) ---
 ARG PIN_TORCH="==2.4.0+cu121"
 ARG PIN_TORCHVISION="==0.19.0+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url https://download.pytorch.org/whl/cu121 \
       "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 
-# App requirements (filter torch/vision so they can't override CUDA wheels)
+# --- App requirements (filter out torch/torchvision so they can't override CUDA wheels) ---
 COPY requirements.txt /tmp/requirements.txt
 RUN sed -E '/^(torch(|vision)|torchvision)(\[.*\])?([<>=].*)?$/d' /tmp/requirements.txt > /tmp/requirements.notorch.txt
 
-# Core AI libs (prebuilt wheels → fast with pip cache)
+# --- Core AI libs (prebuilt wheels) ---
 ARG PIN_TRANSFORMERS=">=4.48.2,<5"
 ARG PIN_DIFFUSERS=">=0.30.2,<0.31"
 ARG PIN_ACCELERATE=">=0.33"
@@ -89,11 +116,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       "protobuf${PIN_PROTOBUF}" \
       "xformers${PIN_XFORMERS}"
 
-# Install your app deps (minus torch/vision)
+# --- App deps (minus torch/vision) ---
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r /tmp/requirements.notorch.txt || true
 
-# Bring in compiled torchmcubes + TripoSR tree
+# --- Bring in compiled torchmcubes + TripoSR tree ---
 COPY --from=builder /out/torchmcubes-* /tmp/wheels/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/wheels/torchmcubes-* && rm -rf /tmp/wheels
@@ -105,15 +132,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN python3 - <<'PY'
 import importlib, os, sys
 
-# --- Versions (fast) ---
+# versions
 import torch, transformers, diffusers, huggingface_hub
 print("torch:", torch.__version__, "cuda:", torch.version.cuda, "CUDA available:", torch.cuda.is_available())
 print("diffusers:", diffusers.__version__)
 print("transformers:", transformers.__version__)
 print("huggingface_hub:", huggingface_hub.__version__)
 
-# --- TorchVision + NMS op (catches CPU wheel / stripped .so) ---
-import torchvision, torchvision.ops, inspect
+# torchvision + NMS op
+import torchvision, torchvision.ops
 print("torchvision:", torchvision.__version__, "file:", torchvision.__file__)
 try:
     from torchvision import _C
@@ -127,18 +154,18 @@ try:
 except Exception as e:
     print("torchvision.ops.nms FAILED:", e); sys.exit(1)
 
-# --- Transformers feature presence (no network) ---
+# transformers feature presence
 assert hasattr(transformers, "UMT5EncoderModel"), "UMT5EncoderModel missing (need transformers >= 4.48)"
 print("Transformers features OK")
 
-# --- Diffusers AuraFlow import (requires torch >= 2.4) ---
+# diffusers AuraFlow import (requires torch >= 2.4)
 try:
     importlib.import_module("diffusers.pipelines.aura_flow.pipeline_aura_flow")
     print("AuraFlow import OK")
 except Exception as e:
     print("AuraFlow import FAILED:", repr(e)); sys.exit(1)
 
-# --- SentencePiece check (offline) ---
+# sentencepiece presence (offline)
 try:
     import sentencepiece as spm
     _ = spm.SentencePieceProcessor()
@@ -146,45 +173,40 @@ try:
 except Exception as e:
     print("sentencepiece FAILED:", e); sys.exit(1)
 
-# --- xFormers basic presence ---
+# xformers presence
 try:
-    import xformers, xformers.ops  # noqa
+    import xformers, xformers.ops  # noqa: F401
     print("xformers present")
 except Exception as e:
     print("xformers FAILED:", e); sys.exit(1)
 
-# --- diffusers API presence ---
+# diffusers API
 from diffusers import AutoPipelineForText2Image
 print("AutoPipelineForText2Image import OK")
 
-# --- OPTIONAL: model init probe (disabled by default to avoid downloads) ---
+# OPTIONAL: model init probe (disabled by default to avoid network)
 RUN_MODEL_SANITY = os.environ.get("RUN_MODEL_SANITY", "0") == "1"
-MODEL_ID = os.environ.get("SANITY_T2I_MODEL_ID")  # e.g. "black-forest-labs/FLUX.1-schnell"
-ALLOW_DOWNLOAD = os.environ.get("SANITY_ALLOW_DOWNLOADS", "0") == "1"  # default OFF at build
+MODEL_ID = os.environ.get("SANITY_T2I_MODEL_ID")
+ALLOW_DOWNLOAD = os.environ.get("SANITY_ALLOW_DOWNLOADS", "0") == "1"
 
 if RUN_MODEL_SANITY and MODEL_ID:
-    import torch
-    kwargs = dict(
-        trust_remote_code=True,
-        use_safetensors=True,
-        torch_dtype=torch.bfloat16
-    )
+    kwargs = dict(trust_remote_code=True, use_safetensors=True, torch_dtype=torch.bfloat16)
     if not ALLOW_DOWNLOAD:
-        kwargs["local_files_only"] = True  # only succeed if already in HF cache
+        kwargs["local_files_only"] = True
     try:
         from diffusers import AutoPipelineForText2Image
-        pipe = AutoPipelineForText2Image.from_pretrained(MODEL_ID, **kwargs)
-        # no inference; just ensure construction works
+        _ = AutoPipelineForText2Image.from_pretrained(MODEL_ID, **kwargs)
         print(f"Model init OK: {MODEL_ID}")
     except Exception as e:
-        print(f"Model init FAILED for {MODEL_ID}:", repr(e))
+        print(f"Model init FAILED for {MODEL_ID}: {e!r}")
         sys.exit(1)
 
 print("SANITY CHECKS PASSED")
 PY
 
-# App last (so code changes don’t bust heavy layers)
+# --- App last (so code changes don't bust heavy layers) ---
 COPY app ./app
 COPY scripts ./scripts
 ENV TRIPOSR_DIR=/opt/TripoSR
+
 CMD ["python3", "-u", "-m", "app.serverless.handler"]
