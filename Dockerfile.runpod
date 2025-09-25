@@ -47,11 +47,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
   pip install --index-url https://download.pytorch.org/whl/cu121 \
     "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
 
-# build torchmcubes wheel
+# Build torchmcubes wheel
 RUN --mount=type=cache,target=/root/.cache/pip \
-  CMAKE_PREFIX_PATH="$(python3 - <<'PY'\nimport torch,sys; sys.stdout.write(torch.utils.cmake_prefix_path)\nPY\n)" \
-  MAX_JOBS=4 \
-  pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
+    CMAKE_PREFIX_PATH="$(python3 -c 'import torch,sys; sys.stdout.write(torch.utils.cmake_prefix_path)')" \
+    MAX_JOBS=4 \
+    pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
 
 # TripoSR deps (torch/vision removed)
 RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
