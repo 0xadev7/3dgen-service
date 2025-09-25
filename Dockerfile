@@ -17,14 +17,16 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 WORKDIR /workspace
 COPY requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+
 RUN pip install --no-cache-dir --upgrade cmake ninja scikit-build-core pybind11
+RUN pip install --no-cache-dir torch==2.4.0 torchvision==0.19.0
 
 # Clone TripoSR and its deps; add to PYTHONPATH
 RUN git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR \
-    && pip install --no-cache-dir -r /opt/TripoSR/requirements.txt \
-    && pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git@b5a5f2c
+    && pip install --no-cache-dir -r /opt/TripoSR/requirements.txt
 ENV PYTHONPATH=/opt/TripoSR:$PYTHONPATH
+
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-cache models to avoid HF downloads at runtime
 
