@@ -4,8 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    HF_HOME=/root/.cache/huggingface \
-    HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface \
     MPLCONFIGDIR=/tmp/matplotlib
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -28,63 +26,6 @@ ENV PYTHONPATH=/opt/TripoSR:$PYTHONPATH
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-cache models to avoid HF downloads at runtime
-
-# 1) FLUX (private-ready)
-RUN --mount=type=secret,id=hf_token,env=HF_TOKEN python3 - <<'PY'
-import os
-from huggingface_hub import login
-from diffusers import FluxPipeline
-
-tok = os.getenv("HF_TOKEN")
-if tok:
-    try:
-        login(tok)
-    except Exception as e:
-        print("HF login warning:", e)
-
-FluxPipeline.from_pretrained(
-    os.getenv("FLUX_MODEL_ID","black-forest-labs/FLUX.1-schnell"),
-    token=tok
-)
-print("cached FLUX")
-PY
-
-# 2) RMBG (private-ready)
-RUN --mount=type=secret,id=hf_token,env=HF_TOKEN python3 - <<'PY'
-import os
-from huggingface_hub import login
-from transformers import AutoImageProcessor, AutoModelForImageSegmentation
-
-tok = os.getenv("HF_TOKEN")
-if tok:
-    try:
-        login(tok)
-    except Exception as e:
-        print("HF login warning:", e)
-
-AutoImageProcessor.from_pretrained("briaai/RMBG-1.4", token=tok)
-AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4", token=tok)
-print("cached RMBG")
-PY
-
-# 3) TripoSR (private-ready)
-RUN --mount=type=secret,id=hf_token,env=HF_TOKEN python3 - <<'PY'
-import os
-from huggingface_hub import login
-from tsr.system import TSR
-
-tok = os.getenv("HF_TOKEN")
-if tok:
-    try:
-        login(tok)
-    except Exception as e:
-        print("HF login warning:", e)
-
-TSR.from_pretrained(os.getenv("TRIPOSR_MODEL_ID","stabilityai/TripoSR"), token=tok)
-print("cached TripoSR")
-PY
-
 COPY app ./app
 COPY runpod.toml ./runpod.toml
 COPY README.md ./README.md
@@ -98,4 +39,15 @@ ENV RMBG_MODE=torch
 ENV FLUX_MODEL_ID=black-forest-labs/FLUX.1-schnell
 ENV TRIPOSR_MODEL_ID=stabilityai/TripoSR
 
-CMD ["python3", "-m", "app.serverless"]
+# Default to /runpod-volume; endpoint env will override if needed
+ENV HF_HOME=/runpod-volume/hf \
+    HUGGINGFACE_HUB_CACHE=/runpod-volume/hf \
+    TRANSFORMERS_CACHE=/runpod-volume/hf/transformers \
+    DIFFUSERS_CACHE=/runpod-volume/hf/diffusers \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+# Entry script to warm cache (optional) and start worker
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+CMD ["/usr/local/bin/entrypoint.sh"]
