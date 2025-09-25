@@ -87,9 +87,19 @@ RUN git clone --depth=1 --branch ${TRIPOSR_REF} https://github.com/VAST-AI-Resea
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel -w /wheelhouse -r /opt/TripoSR/requirements.txt
 
-# (D) torchmcubes wheel (compiled)
+# (D) Install torch/vision (builder only) so CMake can find Torch; then build torchmcubes
+ARG PIN_TORCH="==2.3.1+cu121"
+ARG PIN_TORCHVISION="==0.18.1+cu121"
 RUN --mount=type=cache,target=/root/.cache/pip \
-    MAX_JOBS=4 pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
+    pip install --index-url https://download.pytorch.org/whl/cu121 \
+      "torch${PIN_TORCH}" "torchvision${PIN_TORCHVISION}"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    CMAKE_PREFIX_PATH="$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)')" \
+    TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+    MAX_JOBS=4 \
+    pip wheel -w /wheelhouse git+https://github.com/tatsy/torchmcubes.git
+# (optional) free space in builder layer:
+RUN pip uninstall -y torch torchvision
 
 
 ############################################
