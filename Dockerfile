@@ -5,9 +5,13 @@ FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive     PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1     HF_HOME=/weights
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3.10-venv python3-pip git build-essential python3-dev \
+    python3.10 python3.10-venv python3-pip git build-essential python3-dev ninja-build \
     libgl1 libegl1 libglib2.0-0 libboost-all-dev \
     && rm -rf /var/lib/apt/lists/*
+
+ENV TORCH_CUDA_ARCH_LIST="80;86;89;90"
+ENV CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=80;86;89;90"
+ENV MAX_JOBS=4
 
 # Create a virtualenv to keep image tidy
 RUN python3.10 -m venv /opt/venv
