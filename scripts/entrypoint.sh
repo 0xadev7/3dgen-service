@@ -6,10 +6,9 @@ ROOT="${VOLUME_ROOT:-/runpod-volume}"
 
 export HF_HOME="${HF_HOME:-$ROOT/hf}"
 export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$HF_HOME}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 export DIFFUSERS_CACHE="${DIFFUSERS_CACHE:-$HF_HOME/diffusers}"
 
-mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" "$DIFFUSERS_CACHE"
+mkdir -p "$HF_HOME" "$DIFFUSERS_CACHE"
 
 echo "[entrypoint] ROOT=$ROOT"
 echo "[entrypoint] HF_HOME=$HF_HOME"
