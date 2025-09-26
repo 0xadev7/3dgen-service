@@ -12,7 +12,7 @@ class BgRemover:
         with timed(logger, "load_rmbg"):
             if self.mode == "onnx":
                 import onnxruntime as ort
-                repo = "briaai/RMBG-1.4"
+                repo = "briaai/RMBG-2.0"
                 base = os.getenv("HF_HOME","/root/.cache/huggingface")
                 self.sess = ort.InferenceSession(
                     os.path.join(base, "hub"), providers=["CUDAExecutionProvider","CPUExecutionProvider"]
@@ -20,8 +20,8 @@ class BgRemover:
                 self.kind = "onnx"
             else:
                 from transformers import AutoModelForImageSegmentation, AutoImageProcessor
-                self.processor = AutoImageProcessor.from_pretrained("briaai/RMBG-1.4")
-                self.model = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-1.4").to(self.device)
+                self.processor = AutoImageProcessor.from_pretrained("briaai/RMBG-2.0")
+                self.model = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-2.0").to(self.device)
                 self.kind = "torch"
             logger.info("RMBG loaded", extra={"extra":{"kind": self.kind}})
 
