@@ -19,6 +19,8 @@ COPY requirements.txt ./
 
 # Install Python deps (use prebuilt wheels; torch+cu121 wheels from PyTorch index via --find-links)
 RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.1.2 torchvision==0.16.2 && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir git+https://github.com/tatsy/torchmcubes.git && \
     echo "Using vendored TripoSR"
