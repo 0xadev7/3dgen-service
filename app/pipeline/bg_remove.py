@@ -21,7 +21,7 @@ class BgRemover:
             else:
                 from transformers import AutoModelForImageSegmentation, AutoImageProcessor
                 self.processor = AutoImageProcessor.from_pretrained("briaai/RMBG-2.0")
-                self.model = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-2.0").to(self.device)
+                self.model = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-2.0", trust_remote_code=True).to(self.device)
                 self.kind = "torch"
             logger.info("RMBG loaded", extra={"extra":{"kind": self.kind}})
 
