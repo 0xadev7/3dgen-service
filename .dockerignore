@@ -1,0 +1,7 @@
+*.pyc
+__pycache__/
+weights/
+dist/
+build/
+.git/
+*.ipynb_checkpoints

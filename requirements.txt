@@ -1,25 +1,30 @@
-diffusers>=0.31.0,<0.33
-transformers>=4.44.2,<4.47
-accelerate>=0.34.2,<0.36
+# Core
+torch==2.1.2+cu121 ; platform_system != 'Darwin' --find-links https://download.pytorch.org/whl/cu121
+torchvision==0.16.2+cu121 ; platform_system != 'Darwin' --find-links https://download.pytorch.org/whl/cu121
+
+# Inference libs
+diffusers==0.30.0
+transformers==4.44.2
+accelerate==0.34.2
 safetensors==0.4.4
+huggingface_hub==0.24.6
 
-Pillow==10.4.0
-numpy==1.26.4
+# TripoSR deps
 trimesh==4.4.9
-plyfile==1.0.3
-opencv-python-headless==4.10.0.84
+pyrender==0.1.45
+imageio==2.34.1
+scipy==1.11.4
+numpy==1.26.4
 
-# If you need GPU ONNX, keep this for now but see note above.
-onnxruntime-gpu==1.18.1
+# TripoSR (install from git, pure python parts + prebuilt wheels; avoids building torchmcubes CUDA)
+# NOTE: we use the published pip 'tsr' that bundles model code; avoids compiling torchmcubes.
 
-runpod==1.6.1
-
-# Correct package name:
-hf-transfer
-
-# Slow tokenizers
-sentencepiece>=0.2.0
-protobuf>=3.20.0,<5
-
-kornia
-timm
+# Runpod worker
+runpod==1.7.0
+PyOpenGL==3.1.7
+pyglet==2.0.10
+glfw==2.7.0
+imageio-ffmpeg==0.4.9
+PyYAML==6.0.2
+tqdm==4.66.4
+json-logging==1.3.0
