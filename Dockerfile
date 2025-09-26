@@ -24,7 +24,7 @@ COPY requirements.txt ./
 # Install Core pytorch
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
-    torch==2.1.2 torchvision==0.16.2 &&
+    torch==2.1.2 torchvision==0.16.2
 
 # Vendor TripoSR (no setup.py/pyproject)
 RUN git clone --depth=1 https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
