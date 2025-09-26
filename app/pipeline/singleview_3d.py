@@ -12,7 +12,7 @@ class SingleView3D:
         with timed(logger, "load_triposr"):
             from tsr.system import TSR
             ckpt = os.getenv("TRIPOSR_MODEL_ID", "stabilityai/TripoSR")
-            self.tsr = TSR.from_pretrained(ckpt, cache_dir=os.getenv("HF_HOME", None)).to(self.device)
+            self.tsr = TSR.from_pretrained(ckpt).to(self.device)
             logger.info("TripoSR loaded", extra={"extra":{"model_id": ckpt}})
 
     @torch.inference_mode()
