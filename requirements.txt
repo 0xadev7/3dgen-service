@@ -1,9 +1,6 @@
-torch==2.4.0
-torchvision==0.19.0
-
-diffusers==0.31.0
-transformers==4.44.2
-accelerate==0.34.2
+diffusers>=0.31.0,<0.33
+transformers>=4.44.2,<4.47
+accelerate>=0.34.2,<0.36
 safetensors==0.4.4
 
 Pillow==10.4.0
@@ -12,8 +9,10 @@ trimesh==4.4.9
 plyfile==1.0.3
 opencv-python-headless==4.10.0.84
 
+# If you need GPU ONNX, keep this for now but see note above.
 onnxruntime-gpu==1.18.1
 
 runpod==1.6.1
 
-hf_transfer
+# Correct package name:
+hf-transfer
