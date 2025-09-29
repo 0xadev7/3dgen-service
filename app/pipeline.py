@@ -164,6 +164,7 @@ class TextTo3DPipeline:
                 weight_name="model.ckpt",
             )
 
+        self.tsr.to(device)
         log.info(f"Init done in {time.time()-t0:.2f}s")
 
     # ----- helpers -----
@@ -262,7 +263,9 @@ class TextTo3DPipeline:
     @torch.inference_mode()
     def image_to_mesh(self, img: Image.Image):
         arr = np.array(img.convert("RGB"))
-        out = self.tsr(arr)  # TripoSR forward; structure varies by version
+        out = self.tsr(
+            [arr], device=self.device
+        )  # TripoSR forward; structure varies by version
         # Try standard locations:
         mesh_raw = None
         if isinstance(out, dict) and "mesh" in out:
