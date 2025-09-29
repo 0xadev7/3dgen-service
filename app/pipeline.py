@@ -18,23 +18,17 @@ HF_HOME = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 
 
 def _to_trimesh_any(mesh_obj):
-    """
-    Convert various mesh representations from TripoSR to trimesh.Trimesh.
-    Handles dicts with ('vertices'|'verts'|'v') and ('faces'|'f'|'triangles'),
-    PyTorch tensors, numpy arrays, or already-constructed trimesh objects.
-    """
+    """Convert common TripoSR mesh outputs into trimesh.Trimesh."""
     if isinstance(mesh_obj, trimesh.Trimesh):
         return mesh_obj
 
-    # dict-like
+    # dict-like (vertices/faces)
     if isinstance(mesh_obj, dict):
         v = mesh_obj.get("vertices") or mesh_obj.get("verts") or mesh_obj.get("v")
         f = mesh_obj.get("faces") or mesh_obj.get("f") or mesh_obj.get("triangles")
         if v is None or f is None:
-            raise ValueError(
-                "Mesh dict must contain vertices/verts/v and faces/f/triangles."
-            )
-        if hasattr(v, "detach"):  # torch Tensor
+            raise ValueError("Mesh dict missing vertices/faces.")
+        if hasattr(v, "detach"):
             v = v.detach().cpu().numpy()
         else:
             v = np.asarray(v)
@@ -44,14 +38,13 @@ def _to_trimesh_any(mesh_obj):
             f = np.asarray(f)
         return trimesh.Trimesh(v, f, process=False)
 
-    # object with attributes (some branches return objects with .verts/.faces or .vertices/.faces)
-    attr_pairs = [
+    # object with attributes
+    for va, fa in [
         ("vertices", "faces"),
         ("verts", "faces"),
         ("v", "f"),
         ("vertices", "triangles"),
-    ]
-    for va, fa in attr_pairs:
+    ]:
         if hasattr(mesh_obj, va) and hasattr(mesh_obj, fa):
             v = getattr(mesh_obj, va)
             f = getattr(mesh_obj, fa)
@@ -65,7 +58,7 @@ def _to_trimesh_any(mesh_obj):
                 f = np.asarray(f)
             return trimesh.Trimesh(v, f, process=False)
 
-    raise TypeError(f"Unsupported mesh type from TripoSR: {type(mesh_obj)}")
+    raise TypeError(f"Unsupported mesh type: {type(mesh_obj)}")
 
 
 class TextTo3DPipeline:
@@ -164,7 +157,7 @@ class TextTo3DPipeline:
                 weight_name="model.ckpt",
             )
 
-        self.tsr.to(device)
+        self.tsr.to(self.device)
         log.info(f"Init done in {time.time()-t0:.2f}s")
 
     # ----- helpers -----
@@ -262,17 +255,15 @@ class TextTo3DPipeline:
 
     @torch.inference_mode()
     def image_to_mesh(self, img: Image.Image):
+        # PIL -> CUDA tensor CHW in [0,1]
         arr = np.array(img.convert("RGB"))
-        out = self.tsr(
-            [arr], device=self.device
-        )  # TripoSR forward; structure varies by version
-        # Try standard locations:
-        mesh_raw = None
-        if isinstance(out, dict) and "mesh" in out:
-            mesh_raw = out["mesh"]
-        else:
-            # Some versions return the mesh directly
-            mesh_raw = out
+        ten = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+        ten = ten.to(self.device, non_blocking=True)
 
+        # Run TripoSR on the SAME device as its buffers
+        out = self.tsr(ten, device=self.device)
+
+        # Extract mesh
+        mesh_raw = out["mesh"] if isinstance(out, dict) and "mesh" in out else out
         mesh = _to_trimesh_any(mesh_raw)
         return mesh, out
