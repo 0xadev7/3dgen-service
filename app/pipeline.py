@@ -144,13 +144,25 @@ class TextTo3DPipeline:
             local_tripo = None
         try:
             if local_tripo and os.path.isdir(local_tripo):
-                self.tsr = TSR.from_pretrained(local_tripo, device=self.device)
+                self.tsr = TSR.from_pretrained(
+                    local_tripo,
+                    config_name="config.yaml",
+                    weight_name="model.ckpt",
+                )
             else:
-                self.tsr = TSR.from_pretrained(triposr_repo, device=self.device)
+                self.tsr = TSR.from_pretrained(
+                    triposr_repo,
+                    config_name="config.yaml",
+                    weight_name="model.ckpt",
+                )
             log.info("TripoSR loaded")
         except Exception as e:
             log.error(f"TripoSR load failed: {e}")
-            self.tsr = TSR.from_pretrained(triposr_repo, device=self.device)
+            self.tsr = TSR.from_pretrained(
+                triposr_repo,
+                config_name="config.yaml",
+                weight_name="model.ckpt",
+            )
 
         log.info(f"Init done in {time.time()-t0:.2f}s")
 
