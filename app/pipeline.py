@@ -61,6 +61,24 @@ def _to_trimesh_any(mesh_obj):
     raise TypeError(f"Unsupported mesh type: {type(mesh_obj)}")
 
 
+def _trimesh_from_components(verts, faces):
+    """Build a trimesh.Trimesh from torch/np verts & faces, detaching to CPU as needed."""
+    import numpy as _np
+    import torch as _torch
+
+    if isinstance(verts, _torch.Tensor):
+        verts = verts.detach().cpu().numpy()
+    else:
+        verts = _np.asarray(verts)
+
+    if isinstance(faces, _torch.Tensor):
+        faces = faces.detach().cpu().numpy()
+    else:
+        faces = _np.asarray(faces)
+
+    return trimesh.Trimesh(verts, faces, process=False)
+
+
 class TextTo3DPipeline:
     def __init__(
         self,
@@ -255,14 +273,59 @@ class TextTo3DPipeline:
 
     @torch.inference_mode()
     def image_to_mesh(self, img: Image.Image):
-        # PIL -> numpy HWC in [0,1], contiguous (what TripoSR expects)
+        # Feed HWC float32 in [0,1] (what TripoSR expects internally as B Nv H W C channels-last)
         arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
-        arr = np.ascontiguousarray(arr)  # ensure HWC contiguous
+        arr = np.ascontiguousarray(arr)
 
-        # TripoSR will expand to (B, Nv, H, W, C) internally; keep device aligned
+        # Run TripoSR on the SAME device as its buffers
         out = self.tsr(arr, device=self.device)
 
-        # Extract mesh
-        mesh_raw = out["mesh"] if isinstance(out, dict) and "mesh" in out else out
+        # Normalize outputs into (verts, faces), handling multiple shapes/APIs
+        mesh_raw = out["mesh"] if (isinstance(out, dict) and "mesh" in out) else out
+
+        # Case A: dict-like (preferred)
+        if isinstance(mesh_raw, dict):
+            verts = (
+                mesh_raw.get("vertices") or mesh_raw.get("verts") or mesh_raw.get("v")
+            )
+            faces = (
+                mesh_raw.get("faces") or mesh_raw.get("f") or mesh_raw.get("triangles")
+            )
+            if verts is None:
+                # Some branches put vertices at top-level 'out'
+                verts = out.get("vertices") or out.get("verts") or out.get("v")
+            if faces is None:
+                faces = out.get("faces") or out.get("f") or out.get("triangles")
+            if verts is not None and faces is not None:
+                mesh = _trimesh_from_components(verts, faces)
+                return mesh, out
+            # Fall through to generic converter if dict has nested object
+            mesh = _to_trimesh_any(mesh_raw)
+            return mesh, out
+
+        # Case B: tuple/list (verts, faces)
+        if isinstance(mesh_raw, (tuple, list)) and len(mesh_raw) == 2:
+            verts, faces = mesh_raw
+            mesh = _trimesh_from_components(verts, faces)
+            return mesh, out
+
+        # Case C: tensor-only 'mesh' (typically vertices) -> pull faces from 'out'
+        if isinstance(mesh_raw, torch.Tensor):
+            # Try to find faces in 'out'
+            faces = (
+                (out.get("faces") if isinstance(out, dict) else None)
+                or (out.get("f") if isinstance(out, dict) else None)
+                or (out.get("triangles") if isinstance(out, dict) else None)
+            )
+            if faces is not None:
+                mesh = _trimesh_from_components(mesh_raw, faces)
+                return mesh, out
+            # If faces truly missing, raise a clear error
+            raise ValueError(
+                "TripoSR returned a tensor for mesh (likely vertices) but no faces "
+                "were found in outputs under keys: 'faces'/'f'/'triangles'."
+            )
+
+        # Case D: let the generic helper try (covers objects with .vertices/.faces)
         mesh = _to_trimesh_any(mesh_raw)
         return mesh, out
