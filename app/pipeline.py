@@ -1,5 +1,6 @@
 import os
 import time
+import tempfile
 from typing import List, Tuple, Optional
 
 import torch
@@ -7,12 +8,10 @@ from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
 from transformers import CLIPModel, CLIPProcessor
 from PIL import Image
 import numpy as np
-
-from tsr.system import TSR
 import trimesh
 
+from tsr.system import TSR
 from app.logutil import log
-
 
 HF_HOME = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 
@@ -79,6 +78,64 @@ def _trimesh_from_components(verts, faces):
     return trimesh.Trimesh(verts, faces, process=False)
 
 
+def render_png_from_mesh(mesh: trimesh.Trimesh, out_path: str, size: int = 512) -> str:
+    """
+    Render a single PNG from a mesh using headless EGL via pyrender.
+    Produces a neutral-light, white-background preview at the given size.
+    """
+    import pyrender
+
+    # Build scene
+    scene = pyrender.Scene(
+        bg_color=[255, 255, 255, 255], ambient_light=[0.35, 0.35, 0.35]
+    )
+    mesh_node = pyrender.Mesh.from_trimesh(mesh, smooth=True)
+    scene.add(mesh_node)
+
+    # Camera placement
+    bbox = mesh.bounds  # (2, 3)
+    center = (bbox[0] + bbox[1]) * 0.5
+    size_bbox = bbox[1] - bbox[0]
+    radius = float(np.linalg.norm(size_bbox)) + 1e-6
+    cam_dist = 1.8 * radius if radius > 0 else 1.0
+
+    # Look-at matrix
+    def look_at(eye, target, up=[0, 1, 0]):
+        eye = np.asarray(eye, dtype=np.float32)
+        target = np.asarray(target, dtype=np.float32)
+        up = np.asarray(up, dtype=np.float32)
+        z = eye - target
+        z /= np.linalg.norm(z) + 1e-9
+        x = np.cross(up, z)
+        x /= np.linalg.norm(x) + 1e-9
+        y = np.cross(z, x)
+        m = np.eye(4, dtype=np.float32)
+        m[:3, 0] = x
+        m[:3, 1] = y
+        m[:3, 2] = z
+        m[:3, 3] = eye
+        return m
+
+    eye = center + np.array([0.0, 0.25 * cam_dist, cam_dist], dtype=np.float32)
+    cam = pyrender.PerspectiveCamera(yfov=np.pi / 4.0)
+    cam_pose = look_at(eye, center)
+    scene.add(cam, pose=cam_pose)
+
+    # Lights
+    light = pyrender.DirectionalLight(color=np.ones(3), intensity=3.0)
+    scene.add(light, pose=cam_pose)
+    side_light = pyrender.DirectionalLight(color=np.ones(3), intensity=2.0)
+    side_pose = cam_pose.copy()
+    side_pose[:3, 3] = center + np.array([cam_dist, cam_dist * 0.2, cam_dist * 0.2])
+    scene.add(side_light, pose=side_pose)
+
+    r = pyrender.OffscreenRenderer(viewport_width=size, viewport_height=size)
+    color, _ = r.render(scene)
+    Image.fromarray(color).save(out_path)
+    r.delete()
+    return out_path
+
+
 class TextTo3DPipeline:
     def __init__(
         self,
@@ -142,7 +199,7 @@ class TextTo3DPipeline:
 
         # ---- load CLIP (re-ranker) ----
         clip_repo = os.environ.get("CLIP_REPO", "openai/clip-vit-base-patch32")
-        self.clip_model = CLIPModel.from_pretrained(clip_repo).to(self.device)
+        self.clip_model = CLIPModel.from_pretrained(clip_repo).eval().to(self.device)
         self.clip_processor = CLIPProcessor.from_pretrained(clip_repo)
 
         # ---- load TripoSR ----
@@ -156,23 +213,17 @@ class TextTo3DPipeline:
         try:
             if local_tripo and os.path.isdir(local_tripo):
                 self.tsr = TSR.from_pretrained(
-                    local_tripo,
-                    config_name="config.yaml",
-                    weight_name="model.ckpt",
+                    local_tripo, config_name="config.yaml", weight_name="model.ckpt"
                 )
             else:
                 self.tsr = TSR.from_pretrained(
-                    triposr_repo,
-                    config_name="config.yaml",
-                    weight_name="model.ckpt",
+                    triposr_repo, config_name="config.yaml", weight_name="model.ckpt"
                 )
             log.info("TripoSR loaded")
         except Exception as e:
             log.error(f"TripoSR load failed: {e}")
             self.tsr = TSR.from_pretrained(
-                triposr_repo,
-                config_name="config.yaml",
-                weight_name="model.ckpt",
+                triposr_repo, config_name="config.yaml", weight_name="model.ckpt"
             )
 
         self.tsr.to(self.device)
@@ -257,7 +308,8 @@ class TextTo3DPipeline:
             images=[im for _, im in images],
             return_tensors="pt",
             padding=True,
-        ).to(self.device)
+        )
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
         outputs = self.clip_model(**inputs)
         image_embeds = outputs.image_embeds / outputs.image_embeds.norm(
             dim=-1, keepdim=True
@@ -273,59 +325,33 @@ class TextTo3DPipeline:
 
     @torch.inference_mode()
     def image_to_mesh(self, img: Image.Image):
-        # Feed HWC float32 in [0,1] (what TripoSR expects internally as B Nv H W C channels-last)
+        """
+        Robust TripoSR path:
+          1) Build HWC float32 in [0,1]
+          2) scene_codes = TSR([image], device)
+          3) meshes = TSR.extract_mesh(scene_codes, with_vertex_color=True, resolution=...)
+          4) Export to a temp PLY and load as trimesh.Trimesh
+        """
+        # 1) HWC float32 in [0,1]
         arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
         arr = np.ascontiguousarray(arr)
 
-        # Run TripoSR on the SAME device as its buffers
-        out = self.tsr(arr, device=self.device)
+        # 2) Scene codes (list-of-one image)
+        scene_codes = self.tsr([arr], device=self.device)
 
-        # Normalize outputs into (verts, faces), handling multiple shapes/APIs
-        mesh_raw = out["mesh"] if (isinstance(out, dict) and "mesh" in out) else out
+        # 3) Extract mesh (faces guaranteed)
+        mc_res = int(os.environ.get("TRIPOSR_MC_RES", "256"))
+        meshes = self.tsr.extract_mesh(
+            scene_codes, with_vertex_color=True, resolution=mc_res
+        )
+        if not meshes or meshes[0] is None:
+            raise RuntimeError("TripoSR.extract_mesh returned no mesh.")
 
-        # Case A: dict-like (preferred)
-        if isinstance(mesh_raw, dict):
-            verts = (
-                mesh_raw.get("vertices") or mesh_raw.get("verts") or mesh_raw.get("v")
-            )
-            faces = (
-                mesh_raw.get("faces") or mesh_raw.get("f") or mesh_raw.get("triangles")
-            )
-            if verts is None:
-                # Some branches put vertices at top-level 'out'
-                verts = out.get("vertices") or out.get("verts") or out.get("v")
-            if faces is None:
-                faces = out.get("faces") or out.get("f") or out.get("triangles")
-            if verts is not None and faces is not None:
-                mesh = _trimesh_from_components(verts, faces)
-                return mesh, out
-            # Fall through to generic converter if dict has nested object
-            mesh = _to_trimesh_any(mesh_raw)
-            return mesh, out
-
-        # Case B: tuple/list (verts, faces)
-        if isinstance(mesh_raw, (tuple, list)) and len(mesh_raw) == 2:
-            verts, faces = mesh_raw
-            mesh = _trimesh_from_components(verts, faces)
-            return mesh, out
-
-        # Case C: tensor-only 'mesh' (typically vertices) -> pull faces from 'out'
-        if isinstance(mesh_raw, torch.Tensor):
-            # Try to find faces in 'out'
-            faces = (
-                (out.get("faces") if isinstance(out, dict) else None)
-                or (out.get("f") if isinstance(out, dict) else None)
-                or (out.get("triangles") if isinstance(out, dict) else None)
-            )
-            if faces is not None:
-                mesh = _trimesh_from_components(mesh_raw, faces)
-                return mesh, out
-            # If faces truly missing, raise a clear error
-            raise ValueError(
-                "TripoSR returned a tensor for mesh (likely vertices) but no faces "
-                "were found in outputs under keys: 'faces'/'f'/'triangles'."
-            )
-
-        # Case D: let the generic helper try (covers objects with .vertices/.faces)
-        mesh = _to_trimesh_any(mesh_raw)
-        return mesh, out
+        # 4) Export to temp PLY and reload as trimesh
+        with tempfile.TemporaryDirectory() as td:
+            tmp_ply = os.path.join(td, "mesh.ply")
+            meshes[0].export(tmp_ply)
+            tri = trimesh.load(tmp_ply, force="mesh")
+            if tri is None or not isinstance(tri, trimesh.Trimesh):
+                raise RuntimeError("Failed to reload exported PLY as trimesh.Trimesh.")
+            return tri, {"scene_codes": scene_codes}

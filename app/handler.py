@@ -2,7 +2,7 @@ import os, base64, tempfile, json, argparse
 import time
 import runpod
 
-from app.pipeline import TextTo3DPipeline
+from app.pipeline import TextTo3DPipeline, render_png_from_mesh
 from app.logutil import log
 from app.render import spin_preview
 
@@ -73,14 +73,20 @@ def run(job):
         glb_path = os.path.join(td, "mesh.glb")
         ply_path = os.path.join(td, "mesh.ply")
         mesh.export(glb_path)
-        mesh.export(ply_path)
+        mesh.export(
+            ply_path
+        )  # change to encoding="ascii" if your validator requires ASCII PLY
 
-        # Quick preview
+        # Single-frame PNG preview + optional spin MP4
+        png_path = os.path.join(td, "preview.png")
+        render_png_from_mesh(mesh, png_path, size=size)
+
         mp4_path = os.path.join(td, "preview.mp4")
         spin_preview(mesh, seconds=rot_sec, fps=rot_fps, out_path=mp4_path, size=size)
 
         if return_b64:
             out = {
+                "preview_png_b64": _b64(png_path),
                 "preview_mp4_b64": _b64(mp4_path),
                 "mesh_glb_b64": _b64(glb_path),
                 "mesh_ply_b64": _b64(ply_path),
@@ -89,6 +95,7 @@ def run(job):
             return out
         else:
             out = {
+                "preview_png": png_path,
                 "preview_mp4": mp4_path,
                 "mesh_glb": glb_path,
                 "mesh_ply": ply_path,
