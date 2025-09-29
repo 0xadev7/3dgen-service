@@ -4,6 +4,9 @@ import time
 import runpod
 from typing import Tuple, Dict, Any
 
+import requests
+from PIL import Image
+
 from app.pipeline import TextTo3DPipeline, render_png_from_mesh, render_png_bytes
 from app.logutil import log
 from app.render import spin_preview
@@ -113,7 +116,26 @@ def _ensure_pipe(use_sdxl: bool, lora_paths, lora_scales):
     return PIPE
 
 
-def _generate_mesh(
+def _load_input_image(inp) -> Image.Image:
+    """
+    Load a PIL image from one of: input['image_b64'] | input['image_url'].
+    Returns None if not provided.
+    """
+    b64 = inp.get("image_b64")
+    url = inp.get("image_url")
+    if b64:
+        try:
+            return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        except Exception as e:
+            raise ValueError(f"Failed to decode image_b64: {e}")
+    if url:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        return Image.open(io.BytesIO(resp.content)).convert("RGB")
+    return None
+
+
+def _generate_mesh_or_from_image(
     prompt: str,
     seed: int,
     steps: int,
@@ -122,18 +144,26 @@ def _generate_mesh(
     lora_paths,
     lora_scales,
     return_base64: bool,
+    img_in: Image.Image,
+    mc_res: int,
+    vertex_color: bool,
 ) -> Tuple[Any, Dict[str, str]]:
     """
-    Generate the source image and persist it, then convert to mesh.
-    Returns (mesh, source_image_info).
+    Use a provided source image if given; otherwise synthesize one from text.
+    Then convert to mesh via TripoSR.
     """
     pipe = _ensure_pipe(use_sdxl, lora_paths, lora_scales)
-    img = pipe.text_to_image(prompt, seed=seed, steps=steps, image_size=image_size)
+
+    if img_in is None:
+        # Text -> image
+        img = pipe.text_to_image(prompt, seed=seed, steps=steps, image_size=image_size)
+    else:
+        img = img_in
 
     # Persist the source image *before* turning it into a mesh
     source_image_info = _persist_source_image(img, return_base64)
 
-    mesh, _outs = pipe.image_to_mesh(img)
+    mesh, _outs = pipe.image_to_mesh(img, mc_res=mc_res, vertex_color=vertex_color)
     return mesh, source_image_info
 
 
@@ -158,23 +188,38 @@ def run(job):
     """
     Input schema (examples):
       {
-        "mode": "generate" | "generate_video" | "generate_png",
+        "mode": "generate" | "generate_video" | "generate_png"
+                 | "image_to_mesh" | "image_to_png" | "image_to_video",
+
+        # Provide either a prompt (for text->image) OR an image (for image->mesh)
         "prompt": "a wooden chair",
+        "image_b64": "<...>",            # optional
+        "image_url": "https://...jpg",   # optional
+
+        # Text->image knobs (ignored if image_* provided)
         "seed": 0,
-        "steps": 2,
+        "steps": 4,
         "image_size": 512,
         "use_sdxl": false,
         "lora_paths": [],
         "lora_scales": [],
-        "seconds": 3.0,            # for video
-        "fps": 16,                 # for video
-        "return_base64": true      # if false and S3 is configured -> returns URL
+
+        # TripoSR knobs
+        "mc_res": 384,
+        "vertex_color": true,
+
+        # Video knobs
+        "seconds": 3.0,
+        "fps": 16,
+
+        # Output
+        "return_base64": true            # if false and S3 is configured -> returns URL
       }
     """
     inp = job["input"]
     mode = str(inp.get("mode", "generate")).lower()
 
-    prompt = inp["prompt"]
+    prompt = inp.get("prompt", "")
     seed = int(inp.get("seed", 0))
     steps = int(inp.get("steps", 2))
     size = int(inp.get("image_size", 512))
@@ -183,12 +228,112 @@ def run(job):
     lora_scales = inp.get("lora_scales", [])
     return_b64 = bool(inp.get("return_base64", True))
 
+    # Optional direct image input
+    img_in = _load_input_image(inp)
+
+    # TripoSR controls
+    mc_res = int(inp.get("mc_res", int(os.environ.get("TRIPOSR_MC_RES", "256"))))
+    vertex_color = bool(
+        inp.get(
+            "vertex_color",
+            os.environ.get("TRIPOSR_VERTEX_COLOR", "1") not in ("0", "false", "False"),
+        )
+    )
+
     t_start = time.time()
 
-    # --- PLY endpoint (like your FastAPI /generate) ---
+    # --- direct image->PLY ---
+    if mode == "image_to_mesh":
+        if img_in is None:
+            return {"error": "image_to_mesh requires 'image_b64' or 'image_url'."}
+        mesh, source_image_info = _generate_mesh_or_from_image(
+            prompt,
+            seed,
+            steps,
+            size,
+            use_sdxl,
+            lora_paths,
+            lora_scales,
+            return_b64,
+            img_in,
+            mc_res,
+            vertex_color,
+        )
+        buf = io.BytesIO()
+        mesh.export(buf, file_type="ply")
+        blob = buf.getvalue()
+        log.info(f"PLY size={len(blob)/1e6:.3f} MB; total={time.time()-t_start:.2f}s")
+        out = _return_payload(blob, "mesh.ply", "application/octet-stream", return_b64)
+        out["source_image"] = source_image_info
+        return out
+
+    # --- direct image->PNG ---
+    if mode == "image_to_png":
+        if img_in is None:
+            return {"error": "image_to_png requires 'image_b64' or 'image_url'."}
+        mesh, source_image_info = _generate_mesh_or_from_image(
+            prompt,
+            seed,
+            steps,
+            size,
+            use_sdxl,
+            lora_paths,
+            lora_scales,
+            return_b64,
+            img_in,
+            mc_res,
+            vertex_color,
+        )
+        png_bytes = render_png_bytes(mesh, size=size)
+        log.info(
+            f"PNG size={len(png_bytes)/1e6:.3f} MB; total={time.time()-t_start:.2f}s"
+        )
+        out = _return_payload(png_bytes, "preview.png", "image/png", return_b64)
+        out["source_image"] = source_image_info
+        return out
+
+    # --- direct image->MP4 ---
+    if mode == "image_to_video":
+        if img_in is None:
+            return {"error": "image_to_video requires 'image_b64' or 'image_url'."}
+        seconds = float(inp.get("seconds", 3.0))
+        fps = int(inp.get("fps", 16))
+        mesh, source_image_info = _generate_mesh_or_from_image(
+            prompt,
+            seed,
+            steps,
+            size,
+            use_sdxl,
+            lora_paths,
+            lora_scales,
+            return_b64,
+            img_in,
+            mc_res,
+            vertex_color,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            mp4_path = os.path.join(td, "preview.mp4")
+            spin_preview(mesh, seconds=seconds, fps=fps, out_path=mp4_path, size=size)
+            blob = open(mp4_path, "rb").read()
+        log.info(f"MP4 size={len(blob)/1e6:.3f} MB; total={time.time()-t_start:.2f}s")
+        out = _return_payload(blob, "preview.mp4", "video/mp4", return_b64)
+        out["source_image"] = source_image_info
+        return out
+
+    # --- PLY endpoint (text->image->mesh, legacy) ---
     if mode == "generate":
-        mesh, source_image_info = _generate_mesh(
-            prompt, seed, steps, size, use_sdxl, lora_paths, lora_scales, return_b64
+        mesh, source_image_info = _generate_mesh_or_from_image(
+            prompt,
+            seed,
+            steps,
+            size,
+            use_sdxl,
+            lora_paths,
+            lora_scales,
+            return_b64,
+            img_in=None,  # force text->image path
+            mc_res=mc_res,
+            vertex_color=vertex_color,
         )
         buf = io.BytesIO()
         # If your validator requires ASCII, pass encoding="ascii"
@@ -200,12 +345,22 @@ def run(job):
         out["source_image"] = source_image_info
         return out
 
-    # --- MP4 endpoint (like your /generate_video) ---
+    # --- MP4 endpoint (text->image->mesh, legacy) ---
     if mode == "generate_video":
         seconds = float(inp.get("seconds", 3.0))
         fps = int(inp.get("fps", 16))
-        mesh, source_image_info = _generate_mesh(
-            prompt, seed, steps, size, use_sdxl, lora_paths, lora_scales, return_b64
+        mesh, source_image_info = _generate_mesh_or_from_image(
+            prompt,
+            seed,
+            steps,
+            size,
+            use_sdxl,
+            lora_paths,
+            lora_scales,
+            return_b64,
+            img_in=None,  # force text->image path
+            mc_res=mc_res,
+            vertex_color=vertex_color,
         )
         with tempfile.TemporaryDirectory() as td:
             mp4_path = os.path.join(td, "preview.mp4")
@@ -216,10 +371,20 @@ def run(job):
         out["source_image"] = source_image_info
         return out
 
-    # --- PNG endpoint (easy to paste elsewhere) ---
+    # --- PNG endpoint (text->image->mesh, legacy) ---
     if mode == "generate_png":
-        mesh, source_image_info = _generate_mesh(
-            prompt, seed, steps, size, use_sdxl, lora_paths, lora_scales, return_b64
+        mesh, source_image_info = _generate_mesh_or_from_image(
+            prompt,
+            seed,
+            steps,
+            size,
+            use_sdxl,
+            lora_paths,
+            lora_scales,
+            return_b64,
+            img_in=None,  # force text->image path
+            mc_res=mc_res,
+            vertex_color=vertex_color,
         )
         png_bytes = render_png_bytes(mesh, size=size)
         log.info(
@@ -231,7 +396,8 @@ def run(job):
 
     # Fallback / unknown mode
     return {
-        "error": f"Unknown mode='{mode}'. Expected one of: generate, generate_video, generate_png."
+        "error": f"Unknown mode='{mode}'. Expected one of: "
+        f"generate, generate_video, generate_png, image_to_mesh, image_to_png, image_to_video."
     }
 
 
@@ -244,18 +410,36 @@ if __name__ == "__main__":
         "--mode",
         type=str,
         default="generate",
-        choices=["generate", "generate_video", "generate_png"],
+        choices=[
+            "generate",
+            "generate_video",
+            "generate_png",
+            "image_to_mesh",
+            "image_to_png",
+            "image_to_video",
+        ],
     )
-    ap.add_argument("--prompt", type=str, required=True)
+    ap.add_argument("--prompt", type=str, default="")
+    ap.add_argument("--image_path", type=str, default="")
     ap.add_argument("--return_base64", action="store_true")
+    ap.add_argument("--mc_res", type=int, default=384)
     args = ap.parse_args()
+
+    # Optional local image loader
+    image_b64 = ""
+    if args.image_path and os.path.isfile(args.image_path):
+        with open(args.image_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
     out = run(
         {
             "input": {
                 "mode": args.mode,
                 "prompt": args.prompt,
+                "image_b64": image_b64 if image_b64 else None,
                 "return_base64": args.return_base64,
+                "mc_res": args.mc_res,
             }
         }
     )
-    print(json.dumps(out)[:500] + "...")
+    print(json.dumps(out)[:2000] + "...")

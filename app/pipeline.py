@@ -79,6 +79,65 @@ def _trimesh_from_components(verts, faces):
     return trimesh.Trimesh(verts, faces, process=False)
 
 
+def _square_pad(image: Image.Image, bg=(255, 255, 255)) -> Image.Image:
+    w, h = image.size
+    side = max(w, h)
+    new_im = Image.new("RGB", (side, side), bg)
+    new_im.paste(image, ((side - w) // 2, (side - h) // 2))
+    return new_im
+
+
+def _autocrop_foreground(image: Image.Image) -> Image.Image:
+    """
+    Conservative foreground crop using edges. If OpenCV is unavailable,
+    returns the original image.
+    """
+    try:
+        import cv2
+    except Exception:
+        return image
+
+    gray = image.convert("L")
+    arr = np.array(gray, dtype=np.uint8)
+    edges = cv2.Canny(arr, 50, 150)
+    ys, xs = np.where(edges > 0)
+    if len(xs) < 100 or len(ys) < 100:
+        return image
+    x0, x1 = max(0, xs.min() - 10), min(arr.shape[1], xs.max() + 10)
+    y0, y1 = max(0, ys.min() - 10), min(arr.shape[0], ys.max() + 10)
+    return image.crop((x0, y0, x1, y1))
+
+
+def _preprocess_for_triposr(image: Image.Image, target=512) -> Image.Image:
+    im = image.convert("RGB")
+    im = _autocrop_foreground(im)
+    im = _square_pad(im, (255, 255, 255))
+    if max(im.size) != target:
+        im = im.resize((target, target), Image.LANCZOS)
+    return im
+
+
+def _clean_mesh(tri: trimesh.Trimesh) -> trimesh.Trimesh:
+    tri.remove_unreferenced_vertices()
+    tri.remove_duplicate_faces()
+    tri.remove_degenerate_faces()
+    try:
+        trimesh.repair.fix_inversion(tri)
+        trimesh.repair.fill_holes(tri)
+    except Exception:
+        pass
+    try:
+        # mild smoothing without shrinking too much
+        trimesh.smoothing.filter_taubin(tri, lamb=0.5, nu=-0.53, iterations=10)
+    except Exception:
+        pass
+    tri.rezero()
+    tri.remove_infinite_values()
+    tri.remove_empty_faces()
+    tri.process(validate=True)
+    return tri
+
+
 def render_png_from_mesh(mesh: trimesh.Trimesh, out_path: str, size: int = 512) -> str:
     """
     Render a single PNG from a mesh using headless EGL via pyrender.
@@ -92,6 +151,16 @@ def render_png_from_mesh(mesh: trimesh.Trimesh, out_path: str, size: int = 512) 
     )
     mesh_node = pyrender.Mesh.from_trimesh(mesh, smooth=True)
     scene.add(mesh_node)
+
+    # Optional ground plane for subtle shadow and grounding
+    try:
+        plane = trimesh.creation.box(extents=(10, 0.01, 10))
+        # place plane slightly below mesh min Y
+        plane.apply_translation([0, mesh.bounds[0][1] - 0.01, 0])
+        plane_node = pyrender.Mesh.from_trimesh(plane, smooth=False)
+        scene.add(plane_node)
+    except Exception:
+        pass
 
     # Camera placement
     bbox = mesh.bounds  # (2, 3)
@@ -118,7 +187,6 @@ def render_png_from_mesh(mesh: trimesh.Trimesh, out_path: str, size: int = 512) 
         return m
 
     eye = center + np.array([0.0, 0.25 * cam_dist, cam_dist], dtype=np.float32)
-    import pyrender
 
     cam = pyrender.PerspectiveCamera(yfov=np.pi / 4.0)
     cam_pose = look_at(eye, center)
@@ -336,34 +404,46 @@ class TextTo3DPipeline:
         return ranked[: max(1, topk)]
 
     @torch.inference_mode()
-    def image_to_mesh(self, img: Image.Image):
+    def image_to_mesh(
+        self, img: Image.Image, mc_res: int = 256, vertex_color: bool = True
+    ):
         """
-        Robust TripoSR path:
-          1) Build HWC float32 in [0,1]
-          2) scene_codes = TSR([image], device)
-          3) meshes = TSR.extract_mesh(scene_codes, <with_vertex_color>, resolution=...)
-          4) Export to a temp PLY and load as trimesh.Trimesh
+        Robust TripoSR path with preprocessing and cleanup:
+          1) Preprocess image (autocrop, square pad, resize)
+          2) HWC float32 in [0,1]
+          3) scene_codes = TSR([image], device)
+          4) meshes = TSR.extract_mesh(scene_codes, vertex_color, resolution=mc_res)
+          5) Export to PLY, reload as trimesh, clean & sanity checks
         """
-        # 1) HWC float32 in [0,1]
-        arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        # 1) Preprocess
+        img_pp = _preprocess_for_triposr(img, target=512)
+
+        # 2) HWC float32 in [0,1]
+        arr = np.asarray(img_pp, dtype=np.float32) / 255.0
         arr = np.ascontiguousarray(arr)
 
-        # 2) Scene codes (list-of-one image)
+        # 3) Scene codes (list-of-one image)
         scene_codes = self.tsr([arr], device=self.device)
 
-        # 3) Extract mesh (faces guaranteed). Some TripoSR builds do not accept kwargs.
-        mc_res = int(os.environ.get("TRIPOSR_MC_RES", "256"))
-        vc = os.environ.get("TRIPOSR_VERTEX_COLOR", "1") not in ("0", "false", "False")
-        meshes = self.tsr.extract_mesh(scene_codes, vc, resolution=mc_res)
-
+        # 4) Extract mesh with tunables
+        meshes = self.tsr.extract_mesh(
+            scene_codes, vertex_color, resolution=int(mc_res)
+        )
         if not meshes or meshes[0] is None:
             raise RuntimeError("TripoSR.extract_mesh returned no mesh.")
 
-        # 4) Export to temp PLY and reload as trimesh
+        # 5) Export to temp PLY and reload as trimesh, then clean
         with tempfile.TemporaryDirectory() as td:
             tmp_ply = os.path.join(td, "mesh.ply")
             meshes[0].export(tmp_ply)
             tri = trimesh.load(tmp_ply, force="mesh")
             if tri is None or not isinstance(tri, trimesh.Trimesh):
                 raise RuntimeError("Failed to reload exported PLY as trimesh.Trimesh.")
-            return tri, {"scene_codes": scene_codes}
+            tri = _clean_mesh(tri)
+            # ensure normals are available
+            try:
+                _ = tri.vertex_normals
+            except Exception:
+                tri.rezero()
+
+        return tri, {"scene_codes": scene_codes}
