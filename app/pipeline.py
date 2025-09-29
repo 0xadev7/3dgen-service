@@ -255,13 +255,12 @@ class TextTo3DPipeline:
 
     @torch.inference_mode()
     def image_to_mesh(self, img: Image.Image):
-        # PIL -> CUDA tensor CHW in [0,1]
-        arr = np.array(img.convert("RGB"))
-        ten = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).float() / 255.0
-        ten = ten.to(self.device, non_blocking=True)
+        # PIL -> numpy HWC in [0,1], contiguous (what TripoSR expects)
+        arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        arr = np.ascontiguousarray(arr)  # ensure HWC contiguous
 
-        # Run TripoSR on the SAME device as its buffers
-        out = self.tsr(ten, device=self.device)
+        # TripoSR will expand to (B, Nv, H, W, C) internally; keep device aligned
+        out = self.tsr(arr, device=self.device)
 
         # Extract mesh
         mesh_raw = out["mesh"] if isinstance(out, dict) and "mesh" in out else out
