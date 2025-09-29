@@ -1,6 +1,7 @@
 import os
 import time
 import tempfile
+import io
 from typing import List, Tuple, Optional
 
 import torch
@@ -117,6 +118,8 @@ def render_png_from_mesh(mesh: trimesh.Trimesh, out_path: str, size: int = 512) 
         return m
 
     eye = center + np.array([0.0, 0.25 * cam_dist, cam_dist], dtype=np.float32)
+    import pyrender
+
     cam = pyrender.PerspectiveCamera(yfov=np.pi / 4.0)
     cam_pose = look_at(eye, center)
     scene.add(cam, pose=cam_pose)
@@ -134,6 +137,15 @@ def render_png_from_mesh(mesh: trimesh.Trimesh, out_path: str, size: int = 512) 
     Image.fromarray(color).save(out_path)
     r.delete()
     return out_path
+
+
+def render_png_bytes(mesh: trimesh.Trimesh, size: int = 512) -> bytes:
+    """Same as render_png_from_mesh, but returns PNG bytes (no temp files)."""
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "preview.png")
+        render_png_from_mesh(mesh, path, size=size)
+        with open(path, "rb") as f:
+            return f.read()
 
 
 class TextTo3DPipeline:
@@ -329,7 +341,7 @@ class TextTo3DPipeline:
         Robust TripoSR path:
           1) Build HWC float32 in [0,1]
           2) scene_codes = TSR([image], device)
-          3) meshes = TSR.extract_mesh(scene_codes, with_vertex_color=True, resolution=...)
+          3) meshes = TSR.extract_mesh(scene_codes, <with_vertex_color>, resolution=...)
           4) Export to a temp PLY and load as trimesh.Trimesh
         """
         # 1) HWC float32 in [0,1]
@@ -339,11 +351,11 @@ class TextTo3DPipeline:
         # 2) Scene codes (list-of-one image)
         scene_codes = self.tsr([arr], device=self.device)
 
-        # 3) Extract mesh (faces guaranteed)
+        # 3) Extract mesh (faces guaranteed). Some TripoSR builds do not accept kwargs.
         mc_res = int(os.environ.get("TRIPOSR_MC_RES", "256"))
-        meshes = self.tsr.extract_mesh(
-            scene_codes, True, resolution=mc_res
-        )
+        vc = os.environ.get("TRIPOSR_VERTEX_COLOR", "1") not in ("0", "false", "False")
+        meshes = self.tsr.extract_mesh(scene_codes, vc, resolution=mc_res)
+
         if not meshes or meshes[0] is None:
             raise RuntimeError("TripoSR.extract_mesh returned no mesh.")
 
