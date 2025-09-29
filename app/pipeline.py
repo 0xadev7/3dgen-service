@@ -342,7 +342,7 @@ class TextTo3DPipeline:
         # 3) Extract mesh (faces guaranteed)
         mc_res = int(os.environ.get("TRIPOSR_MC_RES", "256"))
         meshes = self.tsr.extract_mesh(
-            scene_codes, with_vertex_color=True, resolution=mc_res
+            scene_codes, True, resolution=mc_res
         )
         if not meshes or meshes[0] is None:
             raise RuntimeError("TripoSR.extract_mesh returned no mesh.")
