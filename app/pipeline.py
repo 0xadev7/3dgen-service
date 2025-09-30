@@ -118,23 +118,67 @@ def _preprocess_for_triposr(image: Image.Image, target=512) -> Image.Image:
 
 
 def _clean_mesh(tri: trimesh.Trimesh) -> trimesh.Trimesh:
-    tri.remove_unreferenced_vertices()
-    tri.remove_duplicate_faces()
-    tri.remove_degenerate_faces()
+    import numpy as _np
+
+    # 1) Basic dedupe/degenerate cleanup (guarded for older trimesh)
+    if hasattr(tri, "remove_unreferenced_vertices"):
+        tri.remove_unreferenced_vertices()
+    if hasattr(tri, "remove_duplicate_faces"):
+        tri.remove_duplicate_faces()
+    if hasattr(tri, "remove_degenerate_faces"):
+        tri.remove_degenerate_faces()
+    if hasattr(tri, "remove_infinite_values"):
+        tri.remove_infinite_values()
+
+    # 2) Drop faces that reference any NaN/Inf vertices (defensive)
+    v = tri.vertices
+    bad_v = _np.any(~_np.isfinite(v), axis=1)  # True for NaN/Inf rows
+    if bad_v.any():
+        bad_faces = _np.any(bad_v[tri.faces], axis=1)
+        if bad_faces.any():
+            tri.update_faces(~bad_faces)
+            if hasattr(tri, "remove_unreferenced_vertices"):
+                tri.remove_unreferenced_vertices()
+
+    # 3) Repair & fill (best-effort; some builds may miss functions)
     try:
         trimesh.repair.fix_inversion(tri)
+    except Exception:
+        pass
+    try:
         trimesh.repair.fill_holes(tri)
     except Exception:
         pass
     try:
-        # mild smoothing without shrinking too much
+        trimesh.repair.fix_normals(tri)
+    except Exception:
+        pass
+
+    # 4) Mild smoothing (safe if smoothing not available)
+    try:
         trimesh.smoothing.filter_taubin(tri, lamb=0.5, nu=-0.53, iterations=10)
     except Exception:
         pass
-    tri.rezero()
-    tri.remove_infinite_values()
-    tri.remove_empty_faces()
-    tri.process(validate=True)
+
+    # 5) Final tidy + validation
+    try:
+        tri.rezero()
+    except Exception:
+        pass
+    if hasattr(tri, "remove_infinite_values"):
+        tri.remove_infinite_values()
+    # compute normals if missing (access triggers computation)
+    try:
+        _ = tri.vertex_normals
+    except Exception:
+        pass
+
+    # Avoid heavy processing; validate lightly
+    try:
+        tri.process(validate=True)
+    except Exception:
+        pass
+
     return tri
 
 
